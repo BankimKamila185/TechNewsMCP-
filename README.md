@@ -111,22 +111,22 @@ Your bot is already registered on Telegram:
 
 ---
 
-## ⏱️ Running Automatically Every 10 Minutes
+## ⏱️ Running Automatically Every 1 Hour
 
 ### Option 1: Run Local Scheduler Daemon (Recommended for local dev)
 Use the included `scheduler.py` script:
 ```bash
-# Runs the pipeline every 10 minutes continuously
-python scheduler.py --interval 10
+# Runs the pipeline every 1 hour continuously (default is 60 minutes)
+python scheduler.py --hours 1
 ```
 - It performs an initial check immediately on launch.
-- Every 10 minutes, it queries all 7 tech publications, filters out already-sent articles using `sent.db`, runs research on fresh stories, and sends them to your Telegram.
-- If no new stories were published during those 10 minutes, it outputs `Status: No new stories` without spamming your chat.
+- Every 1 hour, it queries all 7 tech publications, filters out already-sent articles using `sent.db`, runs research on fresh stories, and sends them with featured images to your Telegram.
+- If no new stories were published during that hour, it outputs `Status: No new stories` without spamming your chat.
 - Stop anytime with `Ctrl + C`.
 
 ### Option 2: Run in Background with nohup
 ```bash
-nohup .venv/bin/python scheduler.py --interval 10 > scheduler.log 2>&1 &
+nohup .venv/bin/python scheduler.py --hours 1 > scheduler.log 2>&1 &
 ```
 
 ### Option 3: GitHub Actions (Cloud Automation)
@@ -134,9 +134,9 @@ The included workflow `.github/workflows/daily.yml` is configured with:
 ```yaml
 on:
   schedule:
-    - cron: '*/10 * * * *'
+    - cron: '0 * * * *'
 ```
-It runs on GitHub's cloud runners every 10 minutes, using `actions/cache@v4` to persist `sent.db`.
+It runs on GitHub's cloud runners every 1 hour, using `actions/cache@v4` to persist `sent.db`.
 
 ---
 

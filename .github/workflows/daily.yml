@@ -1,9 +1,9 @@
-name: Tech News Digest (Every 10 Minutes)
+name: Tech News Digest (Hourly)
 
 on:
   schedule:
-    # Runs automatically every 10 minutes
-    - cron: '*/10 * * * *'
+    # Runs automatically every 1 hour
+    - cron: '0 * * * *'
   workflow_dispatch:
 
 permissions:
