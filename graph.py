@@ -16,7 +16,12 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langgraph.graph import END, START, StateGraph
 
-from state_store import filter_unsent_articles, mark_urls_as_sent
+from state_store import (
+    are_titles_similar,
+    filter_unsent_articles,
+    mark_articles_as_sent,
+    normalize_url,
+)
 
 # Load environment variables
 load_dotenv()
@@ -95,8 +100,9 @@ async def fetch_news(state: AgentState) -> Dict[str, Any]:
                 if isinstance(data, list):
                     for item in data:
                         url = item.get("url")
-                        if url and url not in seen_urls:
-                            seen_urls.add(url)
+                        norm_u = normalize_url(url)
+                        if norm_u and norm_u not in seen_urls:
+                            seen_urls.add(norm_u)
                             all_news.append(item)
                 elif isinstance(data, dict) and "error" in data:
                     print(f"Warning fetching source '{source}': {data['error']}", file=sys.stderr)
@@ -208,7 +214,12 @@ async def research_stories(state: AgentState) -> Dict[str, Any]:
 SUMMARIZE_SYSTEM_PROMPT = """You are an expert tech journalist and research analyst compiling a daily digest for Telegram.
 Review the provided candidate tech stories and research notes, and select the most significant, impactful ones (at most 8 stories).
 
-Rules:
+STRICT DEDUPLICATION RULES:
+- Every story in the digest MUST be about a completely distinct event or topic.
+- NEVER include multiple stories about the same company announcement, event, launch, acquisition, or incident, even if reported by different outlets.
+- If multiple candidates cover the same story (e.g. from TechCrunch and The Verge), pick only the single best, most informative version.
+
+Formatting Rules:
 1. Output ONLY valid Telegram HTML using ONLY <b> and <a href="..."> tags.
 2. Format each story exactly like this on its own paragraph:
 • <a href="{url}"><b>{escaped_title}</b></a> - {one plain sentence explaining why this story matters based on the research.}
@@ -235,16 +246,24 @@ async def summarize(state: AgentState) -> Dict[str, Any]:
 
     # Fallback if ANTHROPIC_API_KEY is not yet populated
     if not api_key or api_key.startswith("your_anthropic_api_key"):
-        # Generate high-quality curated digest from research notes and summaries
+        # Generate high-quality curated digest with zero duplicate stories
         digest_lines = []
-        for item in fresh_news[:8]:
-            title = sanitize_telegram_html(item.get("title", "Tech News Update"))
+        selected_titles = []
+        for item in fresh_news:
+            title = item.get("title", "Tech News Update").strip()
+            # Double-check title is not duplicate of an already chosen story in this digest
+            if any(are_titles_similar(title, st) for st in selected_titles):
+                continue
+            selected_titles.append(title)
+
+            clean_title = sanitize_telegram_html(title)
             url = item.get("url", "#")
             research_info = research_notes.get(url) or item.get("summary") or "Key development impacting the industry."
-            # Extract first sentence of research
             sentence = re.split(r"(?<=[.!?])\s+", research_info.strip())[0] if research_info else "Major industry update."
             clean_sentence = sanitize_telegram_html(sentence)
-            digest_lines.append(f'• <a href="{url}"><b>{title}</b></a> - {clean_sentence}')
+            digest_lines.append(f'• <a href="{url}"><b>{clean_title}</b></a> - {clean_sentence}')
+            if len(digest_lines) >= 8:
+                break
 
         clean_digest = "\n\n".join(digest_lines)
         return {"digest": clean_digest, "status": "Summarization complete (curated digest)"}
@@ -319,12 +338,11 @@ async def send(state: AgentState) -> Dict[str, Any]:
         if "error" in res_text.lower() or "failed" in res_text.lower():
             return {"status": f"Failed to send digest: {res_text}"}
 
-        # Only after a successful send, record URLs in sent.db
+        # Only after a successful send, record articles with canonical URLs and titles in sent.db
         fresh = state.get("fresh_news", [])
-        sent_urls = [item["url"] for item in fresh if item.get("url")]
-        mark_urls_as_sent(sent_urls)
+        mark_articles_as_sent(fresh)
 
-        return {"status": f"Digest sent successfully ({len(sent_urls)} stories sent and recorded)"}
+        return {"status": f"Digest sent successfully ({len(fresh)} stories sent and recorded)"}
     except Exception as e:
         err_msg = f"Failed to send digest to Telegram: {str(e)}"
         print(err_msg, file=sys.stderr)

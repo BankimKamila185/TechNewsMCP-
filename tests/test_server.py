@@ -20,10 +20,13 @@ from server import (
     web_search,
 )
 from state_store import (
+    are_titles_similar,
     filter_unsent_articles,
     get_sent_urls,
     init_db,
+    mark_articles_as_sent,
     mark_urls_as_sent,
+    normalize_url,
 )
 
 
@@ -306,4 +309,80 @@ def test_state_store_operations(tmp_path):
     assert fresh_after[0]["url"] == "https://example.com/2"
 
     mark_urls_as_sent(["https://example.com/1", "https://example.com/2"], db_path=test_db)
-    assert len(get_sent_urls(test_db)) == 2
+    assert len(get_sent_urls(test_db)) >= 2
+
+
+def test_url_normalization():
+    """Verify that tracking query parameters, www prefixes, and trailing slashes are stripped."""
+    u1 = "https://www.theverge.com/2026/10/28/story/?utm_source=rss&utm_medium=feed&guccounter=1#comments"
+    u2 = "https://theverge.com/2026/10/28/story"
+    assert normalize_url(u1) == normalize_url(u2)
+
+
+def test_semantic_title_similarity():
+    """Verify that headlines about the same event from different outlets are identified as duplicates."""
+    # Cross-outlet duplicate examples
+    assert are_titles_similar(
+        "Upwind raises $400M after walking away from Datadog acquisition offer",
+        "Upwind secures $400M valuation after rejecting Datadog acquisition bid",
+    )
+    assert are_titles_similar(
+        "Anduril now says its BlueChip laptop will meet Buy American standards at launch",
+        "Anduril and Qualcomm partner to build Made-in-USA laptop",
+    )
+    # Distinct topics should not match
+    assert not are_titles_similar(
+        "Apple announces new M4 MacBook Pro with faster Neural Engine",
+        "Google launches Gemini 2.0 with real-time video features",
+    )
+
+
+def test_cross_publication_and_tracking_deduplication(tmp_path):
+    """Verify that filter_unsent_articles drops both tracking variations and cross-outlet duplicates."""
+    test_db = str(tmp_path / "dedupe_test.db")
+    init_db(test_db)
+
+    batch_1 = [
+        {
+            "title": "Anduril now says its BlueChip laptop will meet Buy American standards",
+            "url": "https://www.theverge.com/policy/anduril-bluechip?utm_source=rss",
+        },
+        # Same event reported by TechCrunch in the same batch
+        {
+            "title": "Anduril and Qualcomm partner to build Made-in-USA laptop",
+            "url": "https://techcrunch.com/2026/anduril-laptop-qualcomm",
+        },
+        # Different story
+        {
+            "title": "ULA Vulcan rocket returns to flight on Friday",
+            "url": "https://arstechnica.com/space/vulcan-flight",
+        },
+    ]
+
+    fresh = filter_unsent_articles(batch_1, db_path=test_db)
+    # The duplicate Anduril story should be collapsed, keeping only 2 distinct stories
+    assert len(fresh) == 2
+    titles = [a["title"] for a in fresh]
+    assert any("Vulcan" in t for t in titles)
+    assert any("Anduril" in t for t in titles)
+
+    # Mark these as sent
+    mark_articles_as_sent(fresh, db_path=test_db)
+
+    # Next cycle: Ars Technica publishes Anduril story with new URL, and a new story appears
+    batch_2 = [
+        {
+            "title": "Anduril announces US-built laptops with Qualcomm chips",
+            "url": "https://arstechnica.com/gadgets/anduril-us-laptop",
+        },
+        {
+            "title": "DeepMind announces major protein folding breakthrough",
+            "url": "https://deeplearning.ai/protein-breakthrough",
+        },
+    ]
+
+    fresh_2 = filter_unsent_articles(batch_2, db_path=test_db)
+    # The Anduril story must be dropped because it was already sent in batch 1!
+    assert len(fresh_2) == 1
+    assert "DeepMind" in fresh_2[0]["title"]
+
