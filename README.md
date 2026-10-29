@@ -51,8 +51,14 @@ An automated daily tech news aggregation and research digest pipeline powered by
   - Node 1: `fetch_news` - Concurrently pulls candidate stories across all sources.
   - Node 2: `filter_new` - Compares candidate URLs against SQLite (`sent.db`). Bypasses remaining steps if no new stories exist.
   - Node 3: `research` - Runs deep-dive research queries via MCP tools (`web_search` and `doc_search`) on the top candidate stories.
-  - Node 4: `summarize` - Uses Claude (`claude-sonnet-4-6`) to curate the top 8 stories, explaining why each matters with research context in Telegram HTML. (Includes an extractive curation fallback if `ANTHROPIC_API_KEY` is not yet configured).
-  - Node 5: `send` - Delivers the digest to Telegram with header `📰 Tech News Digest` and commits URLs to `sent.db` only upon confirmed delivery.
+  - Node 4: `summarize` - Formats the digest into structured topic categories:
+    - 🤖 **New Models & AI** (LLMs, neural networks, foundation model releases, AI research)
+    - 💡 **New Innovation** (Scientific breakthroughs, algorithms, quantum computing, clean tech)
+    - 🛡️ **Cyber Crime & Security** (Breaches, zero-days, exploits, malware, CVEs)
+    - ⚡ **New Tech & Hardware** (Chips, robotics, space tech, devices, semiconductors)
+    - 🌐 **Industry & Big Tech** (Major funding, regulations, acquisitions)
+    - Uses Claude (`claude-sonnet-4-6`) when `ANTHROPIC_API_KEY` is present, or a smart categorized extractive fallback.
+  - Node 5: `send` - Delivers the categorized digest to Telegram and commits URLs to `sent.db`.
 - **One-Click Telegram Connection (`connect_telegram.py`)**:
   - Automatically captures your Chat ID once you click Start on your bot, updates `.env`, and sends a verification message.
 - **Automated Scheduling (`.github/workflows/daily.yml`)**:

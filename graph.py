@@ -211,32 +211,104 @@ async def research_stories(state: AgentState) -> Dict[str, Any]:
     }
 
 
-SUMMARIZE_SYSTEM_PROMPT = """You are an expert tech journalist and research analyst compiling a daily digest for Telegram.
-Review the provided candidate tech stories and research notes, and select the most significant, impactful ones (at most 8 stories).
+CATEGORY_DEFINITIONS: Dict[str, Dict[str, Any]] = {
+    "new_models": {
+        "header": "🤖 <b>New Models & AI</b>",
+        "keywords": [
+            "model", "models", "llm", "llms", "gpt", "claude", "gemini", "deep learning",
+            "neural", "transformer", "weights", "reasoning", "agent", "openai",
+            "anthropic", "deepmind", "machine learning", "qwen", "llama", "mistral",
+            "dataset", "diffusion", "chatbot"
+        ],
+    },
+    "new_innovation": {
+        "header": "💡 <b>New Innovation</b>",
+        "keywords": [
+            "breakthrough", "discovery", "innovation", "research", "scientists",
+            "algorithm", "study", "invention", "patent", "biotech", "fusion",
+            "superconductor", "prototype", "physics", "dna", "biology"
+        ],
+    },
+    "cyber_crime": {
+        "header": "🛡️ <b>Cyber Crime & Security</b>",
+        "keywords": [
+            "hack", "hacker", "breach", "vulnerability", "malware", "ransomware",
+            "exploit", "security", "cve", "zero-day", "phishing", "cyber",
+            "spyware", "leak", "bioweapon", "fingerprint", "attack", "backdoor",
+            "trojan", "threat", "ddos", "surveillance", "scam"
+        ],
+    },
+    "new_tech": {
+        "header": "⚡ <b>New Tech & Hardware</b>",
+        "keywords": [
+            "hardware", "chip", "chips", "cpu", "gpu", "semiconductor", "laptop",
+            "device", "robot", "robotics", "rocket", "satellite", "space",
+            "battery", "camera", "phone", "display", "screen", "risc-v", "processor",
+            "quantum", "computer", "engine"
+        ],
+    },
+    "industry": {
+        "header": "🌐 <b>Industry & Big Tech</b>",
+        "keywords": [
+            "raises", "raised", "funding", "startup", "acquisition", "merger",
+            "antitrust", "lawsuit", "ban", "regulation", "court", "investor",
+            "ipo", "ceo", "market", "stock", "layoff", "executive", "hire"
+        ],
+    },
+}
+
+
+def classify_article(title: str, summary: str = "") -> str:
+    """Classify an article into one of the target categories based on keyword presence."""
+    text = f"{title} {summary}".lower()
+    scores: Dict[str, int] = {}
+    for cat_key, cat_data in CATEGORY_DEFINITIONS.items():
+        score = 0
+        for kw in cat_data["keywords"]:
+            matches = len(re.findall(rf"\b{re.escape(kw)}\b", text))
+            score += matches
+        scores[cat_key] = score
+
+    best_cat = max(scores, key=lambda k: scores[k])
+    if scores[best_cat] > 0:
+        return best_cat
+    return "new_tech"
+
+
+SUMMARIZE_SYSTEM_PROMPT = """You are an expert tech curator compiling a categorized daily tech digest for Telegram.
+Review the provided candidate tech stories and research notes, and select the top 6-8 most significant stories.
+
+CATEGORY STRUCTURE:
+Group the stories under these clear section headers (include emoji and bold tags, only show sections that have stories):
+🤖 <b>New Models & AI</b> (Foundation models, LLM releases, AI research, machine learning breakthroughs)
+💡 <b>New Innovation</b> (Scientific discoveries, novel algorithms, clean tech, biotech, quantum computing)
+🛡️ <b>Cyber Crime & Security</b> (Vulnerabilities, data breaches, exploits, malware, cybersecurity threats)
+⚡ <b>New Tech & Hardware</b> (Chips, semiconductors, devices, laptops, robotics, space exploration, hardware)
+🌐 <b>Industry & Big Tech</b> (Major funding, acquisitions, tech regulations, antitrust)
 
 STRICT DEDUPLICATION RULES:
 - Every story in the digest MUST be about a completely distinct event or topic.
-- NEVER include multiple stories about the same company announcement, event, launch, acquisition, or incident, even if reported by different outlets.
-- If multiple candidates cover the same story (e.g. from TechCrunch and The Verge), pick only the single best, most informative version.
+- NEVER include multiple stories about the same event, company announcement, or launch, even if reported by different outlets.
+- If multiple candidates cover the same story, choose only the single best, most informative version.
 
-Formatting Rules:
+FORMATTING REQUIREMENTS:
 1. Output ONLY valid Telegram HTML using ONLY <b> and <a href="..."> tags.
-2. Format each story exactly like this on its own paragraph:
+2. Under each category header, format each story as:
 • <a href="{url}"><b>{escaped_title}</b></a> - {one plain sentence explaining why this story matters based on the research.}
 3. Do NOT include markdown formatting (no asterisks, no markdown links, no code fences like ```html).
-4. Do NOT include introductory remarks, commentary, greetings, or conclusions.
+4. Do NOT include introductory or concluding remarks.
 5. All '&' characters in text and URLs MUST be written as '&amp;'.
-6. Do NOT include more than 8 stories.
+6. Provide at most 8 stories in total across all categories.
 """
 
 SUMMARIZE_USER_PROMPT = """Candidate stories and research notes:
 {candidate_stories}
 
-Generate the Telegram HTML digest now:"""
+Generate the categorized Telegram HTML digest now:"""
 
 
 async def summarize(state: AgentState) -> Dict[str, Any]:
-    """Node 4: Summarize fresh news using ChatAnthropic (with extractive research fallback if API key is not configured)."""
+    """Node 4: Summarize fresh news into categorized sections using Claude (with categorized extractive fallback)."""
     fresh_news = state.get("fresh_news", [])
     research_notes = state.get("research_notes", {})
     if not fresh_news:
@@ -246,27 +318,47 @@ async def summarize(state: AgentState) -> Dict[str, Any]:
 
     # Fallback if ANTHROPIC_API_KEY is not yet populated
     if not api_key or api_key.startswith("your_anthropic_api_key"):
-        # Generate high-quality curated digest with zero duplicate stories
-        digest_lines = []
+        categorized: Dict[str, List[Dict[str, Any]]] = {
+            "new_models": [],
+            "new_innovation": [],
+            "cyber_crime": [],
+            "new_tech": [],
+            "industry": [],
+        }
+
         selected_titles = []
         for item in fresh_news:
             title = item.get("title", "Tech News Update").strip()
-            # Double-check title is not duplicate of an already chosen story in this digest
+            # Prevent duplicate topics within the digest
             if any(are_titles_similar(title, st) for st in selected_titles):
                 continue
-            selected_titles.append(title)
 
-            clean_title = sanitize_telegram_html(title)
-            url = item.get("url", "#")
-            research_info = research_notes.get(url) or item.get("summary") or "Key development impacting the industry."
-            sentence = re.split(r"(?<=[.!?])\s+", research_info.strip())[0] if research_info else "Major industry update."
-            clean_sentence = sanitize_telegram_html(sentence)
-            digest_lines.append(f'• <a href="{url}"><b>{clean_title}</b></a> - {clean_sentence}')
-            if len(digest_lines) >= 8:
+            summary = item.get("summary", "")
+            cat_key = classify_article(title, summary)
+            categorized[cat_key].append(item)
+            selected_titles.append(title)
+            if len(selected_titles) >= 8:
                 break
 
-        clean_digest = "\n\n".join(digest_lines)
-        return {"digest": clean_digest, "status": "Summarization complete (curated digest)"}
+        # Build categorized HTML digest sections
+        digest_sections = []
+        for cat_key in ["new_models", "new_innovation", "cyber_crime", "new_tech", "industry"]:
+            items = categorized[cat_key]
+            if not items:
+                continue
+            cat_header = CATEGORY_DEFINITIONS[cat_key]["header"]
+            lines = [cat_header]
+            for item in items:
+                clean_title = sanitize_telegram_html(item.get("title", "Update"))
+                url = item.get("url", "#")
+                research_info = research_notes.get(url) or item.get("summary") or "Key development impacting the industry."
+                sentence = re.split(r"(?<=[.!?])\s+", research_info.strip())[0] if research_info else "Major industry update."
+                clean_sentence = sanitize_telegram_html(sentence)
+                lines.append(f'• <a href="{url}"><b>{clean_title}</b></a> - {clean_sentence}')
+            digest_sections.append("\n".join(lines))
+
+        clean_digest = "\n\n".join(digest_sections)
+        return {"digest": clean_digest, "status": "Summarization complete (categorized digest)"}
 
     # If ANTHROPIC_API_KEY is available, use Claude
     model_name = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")

@@ -5,10 +5,13 @@ Unit tests for LangGraph agent routing and helper utilities.
 from graph import (
     AgentState,
     build_graph,
+    classify_article,
     extract_mcp_text,
     route_after_filter,
     sanitize_telegram_html,
+    summarize,
 )
+import pytest
 
 
 def test_extract_mcp_text_various_formats():
@@ -79,3 +82,63 @@ def test_graph_structure():
     assert "research" in app.nodes
     assert "summarize" in app.nodes
     assert "send" in app.nodes
+
+
+def test_classify_article_categories():
+    """Verify classification into user requested categories."""
+    # Cyber Crime
+    assert classify_article("Zero-day vulnerability exploited in popular firewall") == "cyber_crime"
+    assert classify_article("Massive ransomware attack cripples hospital network") == "cyber_crime"
+
+    # New Models & AI
+    assert classify_article("Anthropic releases Claude 3.7 Sonnet reasoning model") == "new_models"
+    assert classify_article("OpenAI announces new multimodal LLM architecture") == "new_models"
+
+    # New Tech & Hardware
+    assert classify_article("Nvidia announces Blackwell Ultra GPU with liquid cooling") == "new_tech"
+    assert classify_article("Anduril develops autonomous defense drone hardware") == "new_tech"
+
+    # New Innovation
+    assert classify_article("Quantum teleportation breakthrough over optical fiber") == "new_innovation"
+    assert classify_article("Biotech scientists engineer plastic-eating enzyme discovery") == "new_innovation"
+
+
+@pytest.mark.asyncio
+async def test_categorized_digest_formatting():
+    """Verify that extractive summary organizes stories into categorized sections."""
+    sample_state: AgentState = {
+        "news": [],
+        "fresh_news": [
+            {
+                "title": "Critical zero-day security flaw patched in OpenSSH",
+                "url": "https://example.com/cve-openssh",
+                "summary": "Security team addresses remote code execution flaw.",
+            },
+            {
+                "title": "DeepSeek reveals open weights reasoning model",
+                "url": "https://example.com/deepseek-r1",
+                "summary": "New model matches frontier benchmarks with reinforcement learning.",
+            },
+            {
+                "title": "Qualcomm announces Snapdragon X Elite laptop chip",
+                "url": "https://example.com/snapdragon",
+                "summary": "New ARM processor challenges Apple silicon in power efficiency.",
+            },
+        ],
+        "research_notes": {},
+        "digest": "",
+        "status": "",
+    }
+
+    res = await summarize(sample_state)
+    digest = res["digest"]
+
+    # Verify that category headers appear in the digest
+    assert "🛡️ <b>Cyber Crime & Security</b>" in digest
+    assert "🤖 <b>New Models & AI</b>" in digest
+    assert "⚡ <b>New Tech & Hardware</b>" in digest
+
+    # Verify links and bold formatting
+    assert '<a href="https://example.com/cve-openssh"><b>Critical zero-day' in digest
+    assert '<a href="https://example.com/deepseek-r1"><b>DeepSeek reveals' in digest
+
