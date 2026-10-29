@@ -1,0 +1,29 @@
+# Environment & Secrets
+.env
+.env.*
+!.env.example
+
+# Virtual Environments
+.venv/
+venv/
+ENV/
+
+# Database files
+*.db
+*.sqlite3
+
+# Logs
+*.log
+
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE & OS files
+.DS_Store
+.idea/
+.vscode/
