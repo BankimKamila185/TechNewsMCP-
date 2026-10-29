@@ -408,8 +408,11 @@ async def summarize(state: AgentState) -> Dict[str, Any]:
         return {"digest": "", "status": err_msg}
 
 
+DEFAULT_TECH_BANNER = "https://images.unsplash.com/photo-1518770660439-4636190af475?auto=format&fit=crop&w=1200&q=80"
+
+
 async def send(state: AgentState) -> Dict[str, Any]:
-    """Node 5: Send digest to Telegram and record sent URLs upon success."""
+    """Node 5: Send categorized digest with featured image to Telegram and record sent URLs upon success."""
     digest = state.get("digest", "").strip()
     if not digest:
         return {"status": state.get("status", "No digest to send")}
@@ -417,24 +420,60 @@ async def send(state: AgentState) -> Dict[str, Any]:
     header = "📰 <b>Tech News Digest</b>\n\n"
     full_message = f"{header}{digest}"
 
+    # Determine photo URL to accompany digest
+    fresh = state.get("fresh_news", [])
+    photo_url = None
+    top_title = "Latest Technology & AI Insights"
+    for item in fresh:
+        if item.get("image_url"):
+            photo_url = item["image_url"]
+            top_title = item.get("title", top_title)
+            break
+    if not photo_url:
+        photo_url = DEFAULT_TECH_BANNER
+
     client = MultiServerMCPClient(MCP_CONNECTIONS)
     try:
         tools = await client.get_tools()
         send_tool = next((t for t in tools if t.name == "send_telegram_message"), None)
+        photo_tool = next((t for t in tools if t.name == "send_telegram_photo"), None)
+
         if not send_tool:
             raise RuntimeError("Tool 'send_telegram_message' not exposed by MCP server.")
 
-        res = await send_tool.ainvoke({"text": full_message})
-        res_text = extract_mcp_text(res)
+        delivered_with_photo = False
+        if photo_tool and photo_url:
+            try:
+                if len(full_message) <= 1000:
+                    # Message fits entirely in photo caption
+                    photo_res = await photo_tool.ainvoke({
+                        "caption": full_message,
+                        "photo_url": photo_url,
+                    })
+                    photo_text = extract_mcp_text(photo_res)
+                    if "error" not in photo_text.lower():
+                        delivered_with_photo = True
+                else:
+                    # Send photo banner first with featured title, followed by full categorized digest
+                    banner_caption = f"📰 <b>Tech News Digest</b>\n⚡ Featured: <b>{sanitize_telegram_html(top_title)}</b>"
+                    await photo_tool.ainvoke({
+                        "caption": banner_caption,
+                        "photo_url": photo_url,
+                    })
+            except Exception as pe:
+                print(f"Warning sending photo: {pe}", file=sys.stderr)
 
-        if "error" in res_text.lower() or "failed" in res_text.lower():
-            return {"status": f"Failed to send digest: {res_text}"}
+        if not delivered_with_photo:
+            # Deliver complete categorized text digest
+            res = await send_tool.ainvoke({"text": full_message})
+            res_text = extract_mcp_text(res)
+            if "error" in res_text.lower() or "failed" in res_text.lower():
+                return {"status": f"Failed to send digest: {res_text}"}
 
         # Only after a successful send, record articles with canonical URLs and titles in sent.db
-        fresh = state.get("fresh_news", [])
         mark_articles_as_sent(fresh)
 
-        return {"status": f"Digest sent successfully ({len(fresh)} stories sent and recorded)"}
+        return {"status": f"Digest sent successfully with image ({len(fresh)} stories sent and recorded)"}
     except Exception as e:
         err_msg = f"Failed to send digest to Telegram: {str(e)}"
         print(err_msg, file=sys.stderr)

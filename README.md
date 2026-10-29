@@ -47,8 +47,9 @@ An automated daily tech news aggregation and research digest pipeline powered by
   - `web_search(query, limit)`: Searches the web for background research and technical context on breaking stories.
   - `doc_search(url, max_chars)`: Extracts clean, readable text from target URLs/documentation for deep-dive analysis.
   - `send_telegram_message(text)`: Line-boundary chunking (< 4,000 characters), HTML parse mode, disabled web page previews, and strict token sanitization (secrets are never logged or leaked).
+  - `send_telegram_photo(caption, photo_url)`: Delivers high-res featured story images and infographics directly to Telegram.
 - **LangGraph Multi-Step Workflow (`graph.py`)**:
-  - Node 1: `fetch_news` - Concurrently pulls candidate stories across all sources.
+  - Node 1: `fetch_news` - Concurrently pulls candidate stories across all sources (extracting article thumbnails and media content).
   - Node 2: `filter_new` - Compares candidate URLs against SQLite (`sent.db`). Bypasses remaining steps if no new stories exist.
   - Node 3: `research` - Runs deep-dive research queries via MCP tools (`web_search` and `doc_search`) on the top candidate stories.
   - Node 4: `summarize` - Formats the digest into structured topic categories:
@@ -58,7 +59,7 @@ An automated daily tech news aggregation and research digest pipeline powered by
     - ⚡ **New Tech & Hardware** (Chips, robotics, space tech, devices, semiconductors)
     - 🌐 **Industry & Big Tech** (Major funding, regulations, acquisitions)
     - Uses Claude (`claude-sonnet-4-6`) when `ANTHROPIC_API_KEY` is present, or a smart categorized extractive fallback.
-  - Node 5: `send` - Delivers the categorized digest to Telegram and commits URLs to `sent.db`.
+  - Node 5: `send` - Delivers the categorized digest with the featured headline image to Telegram, and commits URLs to `sent.db`.
 - **One-Click Telegram Connection (`connect_telegram.py`)**:
   - Automatically captures your Chat ID once you click Start on your bot, updates `.env`, and sends a verification message.
 - **Automated Scheduling (`.github/workflows/daily.yml`)**:

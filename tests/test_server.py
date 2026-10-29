@@ -16,6 +16,7 @@ from server import (
     doc_search,
     fetch_tech_news,
     send_telegram_message,
+    send_telegram_photo,
     split_telegram_message,
     web_search,
 )
@@ -276,6 +277,45 @@ async def test_send_telegram_error_redaction_mocked(monkeypatch):
 
         assert "Telegram API error (status 401)" in res
         assert secret_token not in res
+        assert "[REDACTED]" in res
+
+
+@pytest.mark.asyncio
+async def test_send_telegram_photo_success_mocked(monkeypatch):
+    """Successful photo send returns success status."""
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:TOKEN")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "12345")
+
+    mock_resp = httpx.Response(200, json={"ok": True, "result": {"message_id": 2}})
+    with patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_resp):
+        res = await send_telegram_photo("Sample caption", "https://example.com/banner.jpg")
+        assert "photo sent successfully" in res
+
+
+@pytest.mark.asyncio
+async def test_send_telegram_photo_missing_env(monkeypatch):
+    """Missing bot token returns error."""
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+
+    res = await send_telegram_photo("Caption", "https://example.com/pic.jpg")
+    assert "Error" in res
+
+
+@pytest.mark.asyncio
+async def test_send_telegram_photo_error_redaction_mocked(monkeypatch):
+    """Photo errors sanitize bot token."""
+    secret = "SUPER_SECRET_TOKEN"
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", secret)
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "12345")
+
+    error_body = f'{{"ok":false,"description":"Bad Request with {secret}"}}'
+    mock_resp = httpx.Response(400, text=error_body)
+
+    with patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_resp):
+        res = await send_telegram_photo("Caption", "https://example.com/pic.jpg")
+        assert "Telegram sendPhoto error" in res
+        assert secret not in res
         assert "[REDACTED]" in res
 
 

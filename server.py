@@ -41,6 +41,7 @@ RSS_FEEDS: Dict[str, str] = {
 HN_TOP_STORIES_ENDPOINT = "https://hacker-news.firebaseio.com/v0/topstories.json"
 HN_ITEM_ENDPOINT_TEMPLATE = "https://hacker-news.firebaseio.com/v0/item/{item_id}.json"
 TELEGRAM_API_URL_TEMPLATE = "https://api.telegram.org/bot{token}/sendMessage"
+TELEGRAM_PHOTO_URL_TEMPLATE = "https://api.telegram.org/bot{token}/sendPhoto"
 MAX_TELEGRAM_CHUNK_SIZE = 4000
 DEFAULT_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 
@@ -124,6 +125,39 @@ async def _fetch_hackernews_stories(limit: int) -> List[Dict[str, Any]]:
         return results
 
 
+def _extract_entry_image(entry: Any) -> Optional[str]:
+    """Extract thumbnail or hero image URL from feed entry metadata or HTML content."""
+    # Check media_content
+    media_content = entry.get("media_content", [])
+    if media_content and isinstance(media_content, list):
+        for m in media_content:
+            if isinstance(m, dict) and m.get("url"):
+                return m["url"]
+    # Check media_thumbnail
+    media_thumb = entry.get("media_thumbnail", [])
+    if media_thumb and isinstance(media_thumb, list):
+        for m in media_thumb:
+            if isinstance(m, dict) and m.get("url"):
+                return m["url"]
+    # Check enclosures
+    enclosures = entry.get("enclosures", [])
+    if enclosures and isinstance(enclosures, list):
+        for enc in enclosures:
+            if isinstance(enc, dict) and "image" in enc.get("type", "") and enc.get("href"):
+                return enc["href"]
+    # Check <img> tags in summary or content
+    html_blob = str(entry.get("summary", ""))
+    content_list = entry.get("content", [])
+    if isinstance(content_list, list):
+        for c in content_list:
+            if isinstance(c, dict) and "value" in c:
+                html_blob += " " + str(c["value"])
+    img_matches = re.findall(r'<img[^>]+src=["\']([^"\']+)["\']', html_blob)
+    if img_matches:
+        return unescape(img_matches[0])
+    return None
+
+
 def _parse_rss_content_sync(
     content_or_url: Any, source_name: str, limit: int
 ) -> List[Dict[str, Any]]:
@@ -134,14 +168,17 @@ def _parse_rss_content_sync(
         title = entry.get("title", "Untitled").strip()
         link = entry.get("link", "").strip()
         summary = entry.get("summary", "").strip()
-        # Clean basic HTML tags from summary
         clean_summary = re.sub(r"<[^>]+>", "", summary).strip()
-        results.append({
+        img_url = _extract_entry_image(entry)
+        item_data: Dict[str, Any] = {
             "title": title,
             "url": link,
             "source": source_name,
             "summary": clean_summary,
-        })
+        }
+        if img_url:
+            item_data["image_url"] = img_url
+        results.append(item_data)
     return results
 
 
@@ -332,6 +369,48 @@ async def send_telegram_message(text: str) -> str:
                 return f"Telegram request failed on chunk {idx}/{len(chunks)}: {safe_err}"
 
     return f"Telegram message sent successfully ({len(chunks)} chunk(s))."
+
+
+@mcp.tool()
+async def send_telegram_photo(caption: str, photo_url: str) -> str:
+    """Send a photo with an HTML caption to the Telegram chat.
+
+    Uses TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID from the environment.
+
+    Args:
+        caption: HTML caption (max 1024 characters).
+        photo_url: Public HTTP/HTTPS URL of the photo to deliver.
+
+    Returns:
+        Status string describing result.
+    """
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+
+    if not token or not chat_id:
+        return "Error: TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set in the environment."
+
+    if not photo_url or not photo_url.strip():
+        return "Error: photo_url is required."
+
+    url = TELEGRAM_PHOTO_URL_TEMPLATE.format(token=token)
+    payload = {
+        "chat_id": chat_id,
+        "photo": photo_url.strip(),
+        "caption": caption[:1024] if caption else "",
+        "parse_mode": "HTML",
+    }
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        try:
+            resp = await client.post(url, json=payload)
+            if resp.status_code != 200:
+                safe_body = resp.text.replace(token, "[REDACTED]")
+                return f"Telegram sendPhoto error (status {resp.status_code}): {safe_body}"
+            return "Telegram photo sent successfully."
+        except Exception as e:
+            safe_err = str(e).replace(token, "[REDACTED]")
+            return f"Telegram sendPhoto request failed: {safe_err}"
 
 
 if __name__ == "__main__":
