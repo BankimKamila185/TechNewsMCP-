@@ -73,16 +73,20 @@ An automated daily tech news aggregation and research digest pipeline powered by
 
 ```
 tech-news-mcp/
+├── app.py                    # Web server entrypoint for Render (health check + background scheduler)
+├── render.yaml               # Render Blueprint configuration for one-click deployment
 ├── server.py                 # FastMCP server (fetch_tech_news, web_search, doc_search, send_telegram_message)
 ├── graph.py                  # LangGraph agent workflow (fetch -> filter -> research -> summarize -> send)
+├── scheduler.py              # Background recurring runner (runs every 1 hr or custom interval)
 ├── state_store.py            # SQLite helper for sent-URL persistence & deduplication
 ├── connect_telegram.py       # Helper script to link your Telegram bot and auto-detect Chat ID
-├── requirements.txt          # Python dependencies
+├── requirements.txt          # Python dependencies (MCP, LangGraph, Uvicorn, Starlette, etc.)
 ├── pytest.ini                # Pytest configuration
 ├── .env.example              # Sample environment variables template
 ├── .gitignore                # Git ignore rules (.env, .venv, *.db, __pycache__)
 ├── README.md                 # Complete documentation & setup guide
 ├── tests/
+│   ├── test_app.py           # Pytest test suite for Render web endpoints
 │   ├── test_server.py        # Pytest test suite for server tools & chunking
 │   └── test_graph.py         # Pytest test suite for graph routing & sanitization
 └── .github/
@@ -129,7 +133,10 @@ python scheduler.py --hours 1
 nohup .venv/bin/python scheduler.py --hours 1 > scheduler.log 2>&1 &
 ```
 
-### Option 3: GitHub Actions (Cloud Automation)
+### Option 3: Deploy to Render (Cloud Hosting)
+Deploy to Render as a 24/7 web service with zero manual server management. See [Deploying to Render](#-deploying-to-render) below for step-by-step instructions.
+
+### Option 4: GitHub Actions (Cloud Automation)
 The included workflow `.github/workflows/daily.yml` is configured with:
 ```yaml
 on:
@@ -137,6 +144,79 @@ on:
     - cron: '0 * * * *'
 ```
 It runs on GitHub's cloud runners every 1 hour, using `actions/cache@v4` to persist `sent.db`.
+
+---
+
+## 🌐 Deploying to Render
+
+You can host **TechNewsMCP** on [Render](https://render.com) for 24/7 cloud execution using either the **Blueprint** (infrastructure as code via `render.yaml`) or manual web service creation.
+
+The project includes `app.py`, a lightweight web service powered by **Starlette** and **Uvicorn** that binds to Render's `$PORT`, responds to health checks, runs the hourly news digest in the background, and provides on-demand triggering via HTTP.
+
+### Method 1: Blueprint Deployment (Recommended & Fastest)
+
+1. **Log in** to your [Render Dashboard](https://dashboard.render.com).
+2. Click **New +** (top right) and select **Blueprint**.
+3. Connect your GitHub repository:
+   ```
+   https://github.com/BankimKamila185/TechNewsMCP-.git
+   ```
+4. Render will automatically detect [`render.yaml`](render.yaml) and configure:
+   - **Service Type**: Web Service
+   - **Runtime**: Python 3.12
+   - **Build Command**: `pip install -r requirements.txt`
+   - **Start Command**: `python app.py`
+5. Fill in the prompted environment variables:
+   - `TELEGRAM_BOT_TOKEN`: Your Telegram Bot API token (e.g. `8548609073:AAG-mIOVCh-8ZHCPphkUvYRY3GztkNcdp8Q`)
+   - `TELEGRAM_CHAT_ID`: Your chat ID (e.g. `7847910724`)
+   - `ANTHROPIC_API_KEY`: *(Optional)* Your Anthropic API Key (if omitted, high-precision extractive summarization is used)
+   - `CHECK_INTERVAL_MINUTES`: `60` (or `10` if you want 10-minute digests)
+6. Click **Apply Blueprint**. Render will build and deploy your service!
+
+---
+
+### Method 2: Manual Web Service Setup
+
+If you prefer setting up manually without a Blueprint:
+
+1. In the Render Dashboard, click **New +** -> **Web Service**.
+2. Select your repository: `BankimKamila185/TechNewsMCP-`.
+3. Configure the following fields:
+   - **Name**: `tech-news-mcp`
+   - **Region**: Any (e.g., *Oregon (US West)* or *Frankfurt (EU)*)
+   - **Branch**: `main`
+   - **Runtime**: `Python 3`
+   - **Build Command**: `pip install -r requirements.txt`
+   - **Start Command**: `python app.py`
+   - **Instance Type**: `Free`
+4. In the **Environment Variables** section, add:
+   - `PYTHON_VERSION` = `3.12.0`
+   - `TELEGRAM_BOT_TOKEN` = `8548609073:AAG-mIOVCh-8ZHCPphkUvYRY3GztkNcdp8Q`
+   - `TELEGRAM_CHAT_ID` = `7847910724`
+   - `CHECK_INTERVAL_MINUTES` = `60`
+   - `ANTHROPIC_API_KEY` = *(Optional sk-ant-...)*
+5. Click **Create Web Service**.
+
+---
+
+### 🌐 Endpoints & Testing Your Render Deployment
+
+Once deployed, Render provides a public URL (e.g., `https://tech-news-mcp.onrender.com`):
+
+- **Health Check**:
+  ```bash
+  curl https://your-app.onrender.com/health
+  # Returns: {"status": "healthy", "service": "tech-news-mcp", "interval_minutes": 60}
+  ```
+- **Manual On-Demand Digest Trigger**:
+  ```bash
+  curl https://your-app.onrender.com/trigger
+  # Triggers an immediate news fetch, categorization, and sends digest to Telegram!
+  ```
+- **Automatic Background Scheduling**:
+  `app.py` runs an async background loop that automatically checks and sends fresh news to Telegram every 1 hour (or whichever interval you specify in `CHECK_INTERVAL_MINUTES`).
+- **Sleep Prevention (Optional for Free Tier)**:
+  Render free web services spin down after 15 minutes of inactivity. You can keep the service awake or trigger digests by setting up a free monitor (like [UptimeRobot](https://uptimerobot.com) or [cron-job.org](https://cron-job.org)) to ping `https://your-app.onrender.com/health` every 10–14 minutes, or trigger `https://your-app.onrender.com/trigger` every hour!
 
 ---
 
