@@ -60,6 +60,15 @@ An automated daily tech news aggregation and research digest pipeline powered by
     - 🌐 **Industry & Big Tech** (Major funding, regulations, acquisitions)
     - Uses Claude (`claude-sonnet-4-6`) when `ANTHROPIC_API_KEY` is present, or a smart categorized extractive fallback.
   - Node 5: `send` - Delivers the categorized digest with the featured headline image to Telegram, and commits URLs to `sent.db`.
+- **24/7 Interactive Telegram Chatbot (`telegram_bot.py`)**:
+  - Chat directly with the bot on Telegram! It discusses technology, AI advancements, semiconductors, cybersecurity, and recent tech trends.
+  - Powered by Claude (`ChatAnthropic`) when an API key is provided, or an intelligent contextual tech fallback assistant.
+  - **Slash Commands**:
+    - `<b>/start</b>` or `<b>/help</b>`: Bot introduction, quick tips, and available features.
+    - `<b>/news</b>` or `<b>/digest</b>`: Instantly fetch and send fresh breaking news right now.
+    - `<b>/search &lt;query&gt;</b>`: Real-time web and tech archive search on any topic (e.g. `/search deepseek`).
+    - `<b>/status</b>`: Check system uptime, total sent stories, and scheduler interval.
+    - `<b>/categories</b>`: View description of the 5 tracked tech domains.
 - **One-Click Telegram Connection (`connect_telegram.py`)**:
   - Automatically captures your Chat ID once you click Start on your bot, updates `.env`, and sends a verification message.
 - **Automated Scheduling (`.github/workflows/daily.yml`)**:
@@ -73,11 +82,12 @@ An automated daily tech news aggregation and research digest pipeline powered by
 
 ```
 tech-news-mcp/
-├── app.py                    # Web server entrypoint for Render (health check + background scheduler)
+├── app.py                    # Web server entrypoint for Render (health check + background scheduler & chat)
 ├── render.yaml               # Render Blueprint configuration for one-click deployment
 ├── server.py                 # FastMCP server (fetch_tech_news, web_search, doc_search, send_telegram_message)
 ├── graph.py                  # LangGraph agent workflow (fetch -> filter -> research -> summarize -> send)
-├── scheduler.py              # Background recurring runner (runs every 1 hr or custom interval)
+├── scheduler.py              # Background recurring runner (hourly news digests + real-time chat listener)
+├── telegram_bot.py           # Interactive Telegram chatbot engine (chat replies, slash commands, search)
 ├── state_store.py            # SQLite helper for sent-URL persistence & deduplication
 ├── connect_telegram.py       # Helper script to link your Telegram bot and auto-detect Chat ID
 ├── requirements.txt          # Python dependencies (MCP, LangGraph, Uvicorn, Starlette, etc.)
@@ -88,7 +98,8 @@ tech-news-mcp/
 ├── tests/
 │   ├── test_app.py           # Pytest test suite for Render web endpoints
 │   ├── test_server.py        # Pytest test suite for server tools & chunking
-│   └── test_graph.py         # Pytest test suite for graph routing & sanitization
+│   ├── test_graph.py         # Pytest test suite for graph routing & sanitization
+│   └── test_telegram_bot.py  # Pytest test suite for Telegram chatbot & command responses
 └── .github/
     └── workflows/
         └── daily.yml         # Daily scheduled GitHub Actions workflow (02:30 UTC / 08:00 AM IST)

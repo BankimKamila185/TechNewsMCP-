@@ -11,6 +11,7 @@ import sys
 import time
 
 from graph import run_agent
+from telegram_bot import poll_telegram_updates
 
 logging.basicConfig(
     level=logging.INFO,
@@ -56,6 +57,14 @@ async def schedule_loop(interval_minutes: int = 60):
         iteration += 1
 
 
+async def run_all(interval_minutes: int):
+    """Run hourly news scheduler and real-time interactive Telegram bot concurrently."""
+    await asyncio.gather(
+        schedule_loop(interval_minutes),
+        poll_telegram_updates(),
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description="Run Tech News Digest periodically.")
     parser.add_argument(
@@ -76,7 +85,7 @@ def main():
     interval = int(args.hours * 60) if args.hours else args.interval
 
     try:
-        asyncio.run(schedule_loop(interval))
+        asyncio.run(run_all(interval))
     except KeyboardInterrupt:
         logger.info("🛑 Scheduler stopped by user.")
 

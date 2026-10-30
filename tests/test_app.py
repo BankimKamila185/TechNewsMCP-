@@ -11,8 +11,9 @@ import app
 
 @pytest.fixture(autouse=True)
 def disable_scheduler(monkeypatch):
-    """Disable background scheduler task during tests."""
+    """Disable background scheduler task and bot polling during tests."""
     monkeypatch.setattr(app, "ENABLE_SCHEDULER", False)
+    monkeypatch.setattr(app, "ENABLE_BOT_CHAT", False)
 
 
 def test_health_check_endpoint():

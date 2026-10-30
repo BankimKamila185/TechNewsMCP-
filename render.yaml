@@ -10,6 +10,8 @@ services:
         value: 3.12.0
       - key: CHECK_INTERVAL_MINUTES
         value: "60"
+      - key: ENABLE_BOT_CHAT
+        value: "true"
       - key: TELEGRAM_BOT_TOKEN
         sync: false
       - key: TELEGRAM_CHAT_ID
@@ -18,3 +20,4 @@ services:
         sync: false
       - key: ANTHROPIC_MODEL
         value: claude-sonnet-4-6
+

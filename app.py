@@ -15,10 +15,12 @@ from starlette.routing import Route
 
 from graph import run_agent
 from scheduler import schedule_loop
+from telegram_bot import poll_telegram_updates
 
 PORT = int(os.getenv("PORT", "10000"))
 CHECK_INTERVAL_MINUTES = int(os.getenv("CHECK_INTERVAL_MINUTES", "60"))
 ENABLE_SCHEDULER = os.getenv("ENABLE_SCHEDULER", "true").lower() in ("true", "1", "yes")
+ENABLE_BOT_CHAT = os.getenv("ENABLE_BOT_CHAT", "true").lower() in ("true", "1", "yes")
 
 
 async def health_check(request):
@@ -41,17 +43,20 @@ async def trigger_digest(request):
 
 @asynccontextmanager
 async def lifespan(app: Starlette):
-    """Manage background scheduler lifecycle across server startup and shutdown."""
-    task = None
+    """Manage background scheduler and chat listener lifecycle across server startup and shutdown."""
+    tasks = []
     if ENABLE_SCHEDULER:
-        task = asyncio.create_task(schedule_loop(CHECK_INTERVAL_MINUTES))
+        tasks.append(asyncio.create_task(schedule_loop(CHECK_INTERVAL_MINUTES)))
+    if ENABLE_BOT_CHAT:
+        tasks.append(asyncio.create_task(poll_telegram_updates()))
     yield
-    if task and not task.done():
-        task.cancel()
-        try:
-            await task
-        except (asyncio.CancelledError, Exception):
-            pass
+    for task in tasks:
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
 
 
 routes = [
