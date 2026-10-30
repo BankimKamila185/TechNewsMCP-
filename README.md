@@ -178,10 +178,12 @@ The project includes `app.py`, a lightweight web service powered by **Starlette*
    - **Build Command**: `pip install -r requirements.txt`
    - **Start Command**: `python app.py`
 5. Fill in the prompted environment variables:
+   - `GROQ_API_KEY`: Your Groq API key (`gsk_...`) for lightning-fast, highly accurate AI chat and summaries
+   - `GROQ_MODEL`: `qwen/qwen3.8-27b`
    - `TELEGRAM_BOT_TOKEN`: Your Telegram Bot API token (e.g. `8548609073:AAG-mIOVCh-8ZHCPphkUvYRY3GztkNcdp8Q`)
    - `TELEGRAM_CHAT_ID`: Your chat ID (e.g. `7847910724`)
-   - `ANTHROPIC_API_KEY`: *(Optional)* Your Anthropic API Key (if omitted, high-precision extractive summarization is used)
    - `CHECK_INTERVAL_MINUTES`: `60` (or `10` if you want 10-minute digests)
+   - `ANTHROPIC_API_KEY`: *(Optional alternative LLM)*
 6. Click **Apply Blueprint**. Render will build and deploy your service!
 
 ---
@@ -296,7 +298,9 @@ In your GitHub repository, navigate to **Settings > Secrets and variables > Acti
 
 | Secret Name | Description |
 | :--- | :--- |
-| `ANTHROPIC_API_KEY` | Anthropic Claude API Key (`sk-ant-...`) |
+| `GROQ_API_KEY` | Groq API Key (`gsk_...`) for ultra-fast reasoning & summaries |
+| `GROQ_MODEL` *(Optional)* | Model ID (defaults to `qwen/qwen3.8-27b`) |
+| `ANTHROPIC_API_KEY` *(Optional)* | Anthropic Claude API Key (`sk-ant-...`) |
 | `TELEGRAM_BOT_TOKEN` | `8548609073:AAG-mIOVCh-8ZHCPphkUvYRY3GztkNcdp8Q` |
 | `TELEGRAM_CHAT_ID` | Your Telegram Chat ID (detected by `connect_telegram.py`) |
 | `ANTHROPIC_MODEL` *(Optional)* | Claude Model ID (defaults to `claude-sonnet-4-6`) |

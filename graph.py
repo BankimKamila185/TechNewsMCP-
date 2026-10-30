@@ -307,61 +307,57 @@ SUMMARIZE_USER_PROMPT = """Candidate stories and research notes:
 Generate the categorized Telegram HTML digest now:"""
 
 
+async def query_groq_digest(candidate_text: str) -> Optional[str]:
+    """Summarize candidate stories using Groq API."""
+    groq_key = os.getenv("GROQ_API_KEY", "").strip()
+    if not groq_key or groq_key.startswith("your_"):
+        return None
+
+    groq_model = os.getenv("GROQ_MODEL", "qwen/qwen3.8-27b").strip()
+    headers = {
+        "Authorization": f"Bearer {groq_key}",
+        "Content-Type": "application/json",
+    }
+    user_content = SUMMARIZE_USER_PROMPT.format(candidate_stories=candidate_text)
+    payload = {
+        "model": groq_model,
+        "messages": [
+            {"role": "system", "content": SUMMARIZE_SYSTEM_PROMPT},
+            {"role": "user", "content": user_content},
+        ],
+        "temperature": 0.2,
+        "max_tokens": 1500,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers=headers,
+                json=payload,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                choices = data.get("choices", [])
+                if choices:
+                    raw = choices[0].get("message", {}).get("content", "").strip()
+                    clean = re.sub(r"^```[a-zA-Z]*\n?", "", raw)
+                    clean = re.sub(r"\n?```$", "", clean).strip()
+                    return sanitize_telegram_html(clean)
+    except Exception as e:
+        print(f"Groq summarization warning: {e}", file=sys.stderr)
+    return None
+
+
 async def summarize(state: AgentState) -> Dict[str, Any]:
-    """Node 4: Summarize fresh news into categorized sections using Claude (with categorized extractive fallback)."""
+    """Node 4: Summarize fresh news into categorized sections using Groq or Claude (with categorized extractive fallback)."""
     fresh_news = state.get("fresh_news", [])
     research_notes = state.get("research_notes", {})
     if not fresh_news:
         return {"digest": "", "status": "No new stories"}
 
-    api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
-
-    # Fallback if ANTHROPIC_API_KEY is not yet populated
-    if not api_key or api_key.startswith("your_anthropic_api_key"):
-        categorized: Dict[str, List[Dict[str, Any]]] = {
-            "new_models": [],
-            "new_innovation": [],
-            "cyber_crime": [],
-            "new_tech": [],
-            "industry": [],
-        }
-
-        selected_titles = []
-        for item in fresh_news:
-            title = item.get("title", "Tech News Update").strip()
-            # Prevent duplicate topics within the digest
-            if any(are_titles_similar(title, st) for st in selected_titles):
-                continue
-
-            summary = item.get("summary", "")
-            cat_key = classify_article(title, summary)
-            categorized[cat_key].append(item)
-            selected_titles.append(title)
-            if len(selected_titles) >= 8:
-                break
-
-        # Build categorized HTML digest sections
-        digest_sections = []
-        for cat_key in ["new_models", "new_innovation", "cyber_crime", "new_tech", "industry"]:
-            items = categorized[cat_key]
-            if not items:
-                continue
-            cat_header = CATEGORY_DEFINITIONS[cat_key]["header"]
-            lines = [cat_header]
-            for item in items:
-                clean_title = sanitize_telegram_html(item.get("title", "Update"))
-                url = item.get("url", "#")
-                research_info = research_notes.get(url) or item.get("summary") or "Key development impacting the industry."
-                sentence = re.split(r"(?<=[.!?])\s+", research_info.strip())[0] if research_info else "Major industry update."
-                clean_sentence = sanitize_telegram_html(sentence)
-                lines.append(f'• <a href="{url}"><b>{clean_title}</b></a> - {clean_sentence}')
-            digest_sections.append("\n".join(lines))
-
-        clean_digest = "\n\n".join(digest_sections)
-        return {"digest": clean_digest, "status": "Summarization complete (categorized digest)"}
-
-    # If ANTHROPIC_API_KEY is available, use Claude
-    model_name = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
+    groq_key = os.getenv("GROQ_API_KEY", "").strip()
+    anthropic_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
 
     lines = []
     for idx, item in enumerate(fresh_news[:25], 1):
@@ -375,37 +371,79 @@ async def summarize(state: AgentState) -> Dict[str, Any]:
         lines.append(f"{idx}. [{source.upper()}] {title}{extra}\n   URL: {url}")
     candidate_text = "\n".join(lines)
 
-    try:
-        llm = ChatAnthropic(
-            model=model_name,
-            temperature=0.2,
-            max_tokens=2000,
-        )
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", SUMMARIZE_SYSTEM_PROMPT),
-            ("user", SUMMARIZE_USER_PROMPT),
-        ])
-        chain = prompt | llm
-        response = await chain.ainvoke({"candidate_stories": candidate_text})
-        raw_digest = response.content if isinstance(response.content, str) else str(response.content)
+    # 1. Try Groq if GROQ_API_KEY is available
+    if groq_key and not groq_key.startswith("your_"):
+        groq_digest = await query_groq_digest(candidate_text)
+        if groq_digest:
+            return {"digest": groq_digest, "status": "Summarization complete (Groq AI)"}
 
-        # Strip accidental markdown code blocks
-        clean_digest = raw_digest.strip()
-        if clean_digest.startswith("```html"):
-            clean_digest = clean_digest[7:]
-        elif clean_digest.startswith("```"):
-            clean_digest = clean_digest[3:]
-        if clean_digest.endswith("```"):
-            clean_digest = clean_digest[:-3]
-        clean_digest = clean_digest.strip()
+    # 2. Try Claude if ANTHROPIC_API_KEY is available
+    if anthropic_key and not anthropic_key.startswith("your_anthropic_api_key"):
+        model_name = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
+        try:
+            llm = ChatAnthropic(
+                model=model_name,
+                temperature=0.2,
+                max_tokens=2000,
+            )
+            prompt = ChatPromptTemplate.from_messages([
+                ("system", SUMMARIZE_SYSTEM_PROMPT),
+                ("user", SUMMARIZE_USER_PROMPT),
+            ])
+            chain = prompt | llm
+            response = await chain.ainvoke({"candidate_stories": candidate_text})
+            raw_digest = response.content if isinstance(response.content, str) else str(response.content)
 
-        clean_digest = sanitize_telegram_html(clean_digest)
+            clean_digest = raw_digest.strip()
+            clean_digest = re.sub(r"^```[a-zA-Z]*\n?", "", clean_digest)
+            clean_digest = re.sub(r"\n?```$", "", clean_digest).strip()
+            clean_digest = sanitize_telegram_html(clean_digest)
+            return {"digest": clean_digest, "status": "Summarization complete (Claude)"}
+        except Exception as e:
+            print(f"Claude summarization failed: {e}", file=sys.stderr)
 
-        return {"digest": clean_digest, "status": "Summarization complete"}
-    except Exception as e:
-        err_msg = f"Summarization failed: {str(e)}"
-        print(err_msg, file=sys.stderr)
-        return {"digest": "", "status": err_msg}
+    # 3. Categorized extractive fallback if neither is available
+    categorized: Dict[str, List[Dict[str, Any]]] = {
+        "new_models": [],
+        "new_innovation": [],
+        "cyber_crime": [],
+        "new_tech": [],
+        "industry": [],
+    }
+
+    selected_titles = []
+    for item in fresh_news:
+        title = item.get("title", "Tech News Update").strip()
+        # Prevent duplicate topics within the digest
+        if any(are_titles_similar(title, st) for st in selected_titles):
+            continue
+
+        summary = item.get("summary", "")
+        cat_key = classify_article(title, summary)
+        categorized[cat_key].append(item)
+        selected_titles.append(title)
+        if len(selected_titles) >= 8:
+            break
+
+    # Build categorized HTML digest sections
+    digest_sections = []
+    for cat_key in ["new_models", "new_innovation", "cyber_crime", "new_tech", "industry"]:
+        items = categorized[cat_key]
+        if not items:
+            continue
+        cat_header = CATEGORY_DEFINITIONS[cat_key]["header"]
+        sec_lines = [cat_header]
+        for item in items:
+            clean_title = sanitize_telegram_html(item.get("title", "Update"))
+            url = item.get("url", "#")
+            research_info = research_notes.get(url) or item.get("summary") or "Key development impacting the industry."
+            sentence = re.split(r"(?<=[.!?])\s+", research_info.strip())[0] if research_info else "Major industry update."
+            clean_sentence = sanitize_telegram_html(sentence)
+            sec_lines.append(f'• <a href="{url}"><b>{clean_title}</b></a> - {clean_sentence}')
+        digest_sections.append("\n".join(sec_lines))
+
+    clean_digest = "\n\n".join(digest_sections)
+    return {"digest": clean_digest, "status": "Summarization complete (categorized digest)"}
 
 
 DEFAULT_TECH_BANNER = "https://images.unsplash.com/photo-1518770660439-4636190af475?auto=format&fit=crop&w=1200&q=80"

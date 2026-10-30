@@ -158,12 +158,97 @@ async def fetch_live_web_context(query: str, limit: int = 3) -> List[Dict[str, s
         return []
 
 
+async def query_groq_llm(
+    messages: List[Dict[str, str]],
+    temperature: float = 0.7,
+    max_tokens: int = 800,
+) -> Optional[str]:
+    """Call Groq API using HTTPX for ultra-fast, high-accuracy inference."""
+    groq_key = os.getenv("GROQ_API_KEY", "").strip()
+    if not groq_key or groq_key.startswith("your_"):
+        return None
+
+    groq_model = os.getenv("GROQ_MODEL", "qwen/qwen3.8-27b").strip()
+    headers = {
+        "Authorization": f"Bearer {groq_key}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": groq_model,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=25.0) as client:
+            resp = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers=headers,
+                json=payload,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                choices = data.get("choices", [])
+                if choices:
+                    text = choices[0].get("message", {}).get("content", "").strip()
+                    if text:
+                        if text.startswith("```html") or text.startswith("```"):
+                            text = re.sub(r"^```[a-zA-Z]*\n?", "", text)
+                            text = re.sub(r"\n?```$", "", text).strip()
+                        text = re.sub(r"&(?!amp;|lt;|gt;|quot;|apos;|#\d+;|#x[0-9a-fA-F]+;)", "&amp;", text)
+                        return text
+            else:
+                safe_body = resp.text.replace(groq_key, "[REDACTED]")
+                logger.warning("Groq API error (%d): %s", resp.status_code, safe_body[:200])
+    except Exception as e:
+        safe_err = str(e).replace(groq_key, "[REDACTED]")
+        logger.warning("Failed calling Groq LLM: %s", safe_err)
+    return None
+
+
 async def generate_conversational_reply(user_message: str, user_name: str = "Friend") -> str:
     """Generate a friendly, accurate, and engaging tech response."""
+    # 1. Try Groq API first (ultra-fast, accurate)
+    groq_key = os.getenv("GROQ_API_KEY", "").strip()
+    if groq_key and not groq_key.startswith("your_"):
+        context_snippets = []
+        if len(user_message.split()) >= 2:
+            web_context = await fetch_live_web_context(user_message, limit=2)
+            for w in web_context:
+                title = w.get("title", "")
+                url = w.get("url", "")
+                snip = w.get("snippet", "")
+                if title:
+                    context_snippets.append(f"Web source: {title} ({url}): {snip[:120]}")
+
+        context_prompt = ""
+        if context_snippets:
+            context_prompt = "\nRecent verified web context:\n" + "\n".join(context_snippets) + "\n"
+
+        system_prompt = (
+            f"You are TechNews Assistant, a friendly, warm, enthusiastic, and highly knowledgeable AI companion in Telegram "
+            f"speaking with your friend and fellow tech enthusiast, {user_name}.\n"
+            "Your personality is warm, approachable, technically accurate, and articulate.\n"
+            "When answering questions about technology, artificial intelligence, companies (Google, OpenAI, Nvidia, Apple, etc.), chips, or cybersecurity:\n"
+            "- Greet {user_name} in a friendly, conversational manner.\n"
+            "- Give clear, accurate, and structured insights with real-world context.\n"
+            "- Use Telegram HTML formatting: <b>bold</b>, <i>italic</i>, <code>code</code>, <a href='...'>links</a>.\n"
+            "- Always escape literal ampersands as &amp;.\n"
+            "- Never wrap your response in markdown code fences.\n"
+            "- Keep the tone conversational, friendly, and helpful."
+        )
+        groq_reply = await query_groq_llm([
+            {"role": "system", "content": system_prompt + context_prompt},
+            {"role": "user", "content": f"User ({user_name}) asked: {user_message}"},
+        ])
+        if groq_reply:
+            return groq_reply
+
     anthropic_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
     model_name = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6").strip()
 
-    # 1. Use Claude if API key is provided
+    # 2. Use Claude if API key is provided
     if anthropic_key and not anthropic_key.startswith("your_"):
         try:
             from langchain_anthropic import ChatAnthropic
@@ -459,15 +544,24 @@ async def handle_user_command(command: str, args: str, chat_id: int | str, user_
             )
 
         interval = os.getenv("CHECK_INTERVAL_MINUTES", "60")
+        has_groq = bool(os.getenv("GROQ_API_KEY", "").strip())
+        groq_model = os.getenv("GROQ_MODEL", "qwen/qwen3.8-27b")
         has_anthropic = bool(os.getenv("ANTHROPIC_API_KEY", "").strip())
-        model = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
+        anthropic_model = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
+
+        if has_groq:
+            engine_desc = f"Groq AI ({groq_model})"
+        elif has_anthropic:
+            engine_desc = f"Claude ({anthropic_model})"
+        else:
+            engine_desc = "Smart Structured Extractor"
 
         return (
             "📊 <b>TechNews System Status:</b>\n\n"
             f"• <b>Status</b>: 🟢 Active &amp; Operational\n"
             f"• <b>Recurring Schedule</b>: Every {interval} minutes\n"
             f"• <b>Total Unique Stories Sent</b>: <code>{total_stories}</code>\n"
-            f"• <b>Summarizer Mode</b>: {'Claude (' + model + ')' if has_anthropic else 'Smart Structured Extractor'}\n"
+            f"• <b>AI Engine Mode</b>: {engine_desc}\n"
             f"• <b>Active Sources (7)</b>: Hacker News, TechCrunch, The Verge, Ars Technica, Guardian, MIT Review, DeepLearning.AI\n"
             f"{recent_str}\n\n"
             "<i>Everything is running smoothly!</i>"
