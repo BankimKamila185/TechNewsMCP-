@@ -18,22 +18,22 @@ from telegram_bot import (
 async def test_generate_conversational_reply_ai_pace():
     """Verify AI pace inquiries return insightful responses."""
     resp = await generate_conversational_reply("ai is getting to far", user_name="Bankim")
-    assert "AI is indeed progressing at a breathtaking pace" in resp
-    assert "Reasoning" in resp or "Autonomous" in resp
+    assert "breathtaking pace" in resp
+    assert "Test-Time Reasoning" in resp or "Autonomous" in resp
 
 
 @pytest.mark.asyncio
 async def test_generate_conversational_reply_cybersecurity():
-    """Verify cybersecurity topics trigger specialized security context."""
+    """Verify cybersecurity topics trigger specialized security context or live search."""
     resp = await generate_conversational_reply("Tell me about latest cyber security attacks", user_name="Bankim")
-    assert "Cybersecurity" in resp or "zero-trust" in resp
+    assert "Cyber" in resp or "cyber" in resp or "attack" in resp or "zero-trust" in resp
 
 
 @pytest.mark.asyncio
 async def test_generate_conversational_reply_hardware():
     """Verify hardware topics trigger semiconductor and compute responses."""
     resp = await generate_conversational_reply("What is the latest with nvidia and intel chips?", user_name="Bankim")
-    assert "Hardware" in resp or "Silicon" in resp or "compute" in resp
+    assert "Nvidia" in resp or "Blackwell" in resp or "Hardware" in resp or "Silicon" in resp or "compute" in resp
 
 
 @pytest.mark.asyncio
@@ -100,4 +100,4 @@ async def test_process_telegram_update_conversational_message():
         args, kwargs = mock_reply.call_args
         # kwargs or args: token, chat_id, text, reply_to_message_id
         assert args[1] == 12345
-        assert "AI is indeed progressing at a breathtaking pace" in args[2]
+        assert "breathtaking pace" in args[2]

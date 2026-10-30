@@ -2,22 +2,22 @@
 Conversational Telegram Bot module for TechNews.
 
 Handles incoming messages, questions, and commands from users:
-- /start, /help: Welcome message and command guide
-- /news, /digest: Trigger on-demand news fetch & categorized digest
-- /search <query>: Real-time search across recent news and web
-- /status: Show scheduler status, sent stories count, and configuration
-- Interactive conversational chat: Discusses tech, AI, cybersecurity, and news
-  using Anthropic Claude (if configured) or an intelligent built-in fallback.
+- Friendly, accurate, and conversational tech answers
+- Live web search and recent news retrieval on any topic or company
+- Special in-depth coverage for Google, OpenAI, Nvidia, Apple, Meta, Anthropic, DeepSeek, etc.
+- Slash commands: /news, /search, /status, /categories, /help
+- Strict deduplication so messages are never processed or sent twice
 """
 
 import asyncio
 import html
+import json
 import logging
 import os
 import re
 import sys
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 import httpx
 from dotenv import load_dotenv
@@ -40,6 +40,10 @@ TELEGRAM_GET_UPDATES_URL = "https://api.telegram.org/bot{token}/getUpdates"
 TELEGRAM_SEND_MESSAGE_URL = "https://api.telegram.org/bot{token}/sendMessage"
 TELEGRAM_SEND_ACTION_URL = "https://api.telegram.org/bot{token}/sendChatAction"
 
+# In-memory deduplication cache to prevent duplicate processing
+PROCESSED_UPDATE_IDS: Set[int] = set()
+PROCESSED_MESSAGES: Set[str] = set()
+
 
 def get_db_stats() -> Dict[str, Any]:
     """Retrieve statistics from the SQLite sent.db store."""
@@ -51,7 +55,10 @@ def get_db_stats() -> Dict[str, Any]:
             cursor.execute("SELECT COUNT(*) FROM sent_articles")
             total = cursor.fetchone()[0]
             cursor.execute("SELECT title, url, sent_at FROM sent_articles ORDER BY rowid DESC LIMIT 5")
-            recent = [{"title": r[0] or "Article", "url": r[1], "source": "Sent", "sent_at": r[2]} for r in cursor.fetchall()]
+            recent = [
+                {"title": r[0] or "Article", "url": r[1], "source": "Sent", "sent_at": r[2]}
+                for r in cursor.fetchall()
+            ]
             return {"total_sent": total, "recent": recent}
     except Exception as e:
         logger.warning("Could not fetch DB stats: %s", e)
@@ -66,7 +73,7 @@ def search_recent_db_stories(query: str, limit: int = 5) -> List[Dict[str, str]]
             return []
         with sqlite3.connect(DEFAULT_DB_PATH) as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT title, url, sent_at FROM sent_articles ORDER BY rowid DESC LIMIT 200")
+            cursor.execute("SELECT title, url, sent_at FROM sent_articles ORDER BY rowid DESC LIMIT 300")
             rows = cursor.fetchall()
 
         matches = []
@@ -75,7 +82,7 @@ def search_recent_db_stories(query: str, limit: int = 5) -> List[Dict[str, str]]
                 continue
             title_lower = title.lower()
             if any(w in title_lower for w in words):
-                matches.append({"title": title, "url": url, "source": "News Archive", "sent_at": sent_at})
+                matches.append({"title": title, "url": url, "source": "Digest Archive", "sent_at": sent_at})
                 if len(matches) >= limit:
                     break
         return matches
@@ -123,7 +130,6 @@ async def reply_telegram_message(
                 if resp.status_code != 200:
                     safe_body = resp.text.replace(token, "[REDACTED]")
                     logger.error("Telegram send error (status %d): %s", resp.status_code, safe_body)
-                    # If HTML parse error occurred, retry once as plain text
                     if "can't parse entities" in resp.text.lower():
                         payload["parse_mode"] = ""
                         del payload["parse_mode"]
@@ -137,12 +143,27 @@ async def reply_telegram_message(
     return True
 
 
+async def fetch_live_web_context(query: str, limit: int = 3) -> List[Dict[str, str]]:
+    """Helper to query web_search for live real-time context."""
+    try:
+        raw = await web_search(query, limit=limit)
+        data = json.loads(raw)
+        if isinstance(data, list):
+            return data
+        elif isinstance(data, dict):
+            return data.get("results", [])
+        return []
+    except Exception as e:
+        logger.warning("Error fetching web context for '%s': %s", query, e)
+        return []
+
+
 async def generate_conversational_reply(user_message: str, user_name: str = "Friend") -> str:
-    """Generate an intelligent tech response using Claude or contextual fallback."""
+    """Generate a friendly, accurate, and engaging tech response."""
     anthropic_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
     model_name = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6").strip()
 
-    # If Anthropic Claude API key is configured, use it for unconstrained reasoning
+    # 1. Use Claude if API key is provided
     if anthropic_key and not anthropic_key.startswith("your_"):
         try:
             from langchain_anthropic import ChatAnthropic
@@ -152,19 +173,20 @@ async def generate_conversational_reply(user_message: str, user_name: str = "Fri
                 model=model_name,
                 api_key=anthropic_key,
                 temperature=0.7,
-                max_tokens=600,
+                max_tokens=700,
             )
             system_prompt = (
-                "You are TechNews Assistant, an intelligent, conversational tech and AI companion inside a Telegram bot. "
-                "You are knowledgeable, engaging, balanced, and articulate about computer science, artificial intelligence, "
-                "cybersecurity, hardware, robotics, and the tech industry. "
-                "Keep your response concise, sharp, and conversational (typically 2-3 short paragraphs or bullet points). "
+                f"You are TechNews Assistant, a friendly, warm, enthusiastic, and highly knowledgeable AI companion in Telegram. "
+                f"You are speaking with your friend and fellow tech enthusiast, {user_name}. "
+                "Always be warm, conversational, articulate, and accurate. "
+                "If asked about technology, companies (like Google, Apple, Nvidia, OpenAI), AI models, chips, or cybersecurity, "
+                "give specific, up-to-date, accurate details in an easy-to-read style. "
                 "Format using Telegram HTML (<b>bold</b>, <i>italic</i>, <code>code</code>, <a href='...'>links</a>). "
-                "Always escape all literal ampersands as &amp;. Do not wrap the response in markdown backticks."
+                "Always escape all literal ampersands as &amp;. Never wrap the output in markdown backticks."
             )
             response = await llm.ainvoke([
                 SystemMessage(content=system_prompt),
-                HumanMessage(content=f"User ({user_name}) said: {user_message}"),
+                HumanMessage(content=f"User ({user_name}) asked: {user_message}"),
             ])
             text = response.content if isinstance(response.content, str) else str(response.content)
             if text and text.strip():
@@ -172,93 +194,226 @@ async def generate_conversational_reply(user_message: str, user_name: str = "Fri
         except Exception as e:
             logger.warning("Claude conversation call failed, falling back to smart responder: %s", e)
 
-    # Contextual Intelligent Fallback Engine
-    msg_lower = user_message.lower().strip()
+    # 2. Friendly, Accurate Intelligent Engine (when Claude is not set or fails)
+    msg_clean = user_message.strip()
+    msg_lower = msg_clean.lower()
 
-    # 1. AI pace / progress / concern (e.g. "ai is getting to far", "ai is crazy", "ai taking over")
-    if any(k in msg_lower for k in ["too far", "to far", "getting far", "scary", "taking over", "crazy", "fast", "future of ai", "agi"]):
+    # A. Casual Greetings & Friendly Chit-Chat
+    greetings = ["hi", "hello", "hey", "how are you", "what's up", "whats up", "good morning", "good evening", "good afternoon"]
+    if any(msg_lower == g or msg_lower.startswith(g + " ") for g in greetings):
         return (
-            "🤖 <b>AI is indeed progressing at a breathtaking pace!</b>\n\n"
-            "From reasoning models that deliberate before answering, to autonomous agents using developer tools "
-            "and executing multi-step workflows, the rate of capability jumps in recent months has been unprecedented.\n\n"
-            "<b>Key frontiers moving fastest right now:</b>\n"
-            "• <b>Reasoning &amp; Test-Time Compute</b>: Shifting from fast next-token prediction to deep architectural deliberation.\n"
-            "• <b>Autonomous Tool Use &amp; MCP</b>: Agents interacting directly with codebases, APIs, and browsers.\n"
-            "• <b>Physical &amp; Embodied AI</b>: Rapid progress in robotics and industrial automation.\n\n"
-            "<i>What specific breakthrough or trend has caught your attention most? You can also type /news to see today's top tech releases!</i>"
+            f"Hey {html.escape(user_name)}! 😊 It's great to hear from you!\n\n"
+            "I'm having a great day, keeping an active eye on everything happening across tech, AI breakthroughs, and cybersecurity.\n\n"
+            "What would you like to explore today? You can ask me what companies like <b>Google</b>, <b>OpenAI</b>, or <b>Nvidia</b> are building, "
+            "ask for the latest tech news with <b>/news</b>, or search any topic with <b>/search &lt;query&gt;</b>! 🚀"
         )
 
-    # 2. Cybersecurity & hacking inquiries
-    if any(k in msg_lower for k in ["hack", "breach", "cyber", "security", "malware", "ransomware", "vulnerability", "leak"]):
-        recent_security = search_recent_db_stories("cyber security hack breach vulnerability", limit=3)
-        rec_text = ""
-        if recent_security:
-            rec_text = "\n\n<b>Recent cybersecurity headlines recorded:</b>\n" + "\n".join(
-                f"• <a href='{s['url']}'>{html.escape(s['title'])}</a> ({s['source']})" for s in recent_security
+    # B. User appreciation
+    if any(msg_lower == thx or msg_lower.startswith(thx + " ") for thx in ["thanks", "thank you", "thx", "awesome", "great job", "nice", "cool"]):
+        return (
+            f"You're very welcome, {html.escape(user_name)}! 🙌 Happy to help. "
+            "Whenever you want to know what's happening in tech or have a question, I'm right here!"
+        )
+
+    # C. Company-Specific In-Depth & Accurate Knowledge:
+    # 1) Google / Alphabet
+    if "google" in msg_lower or "alphabet" in msg_lower or "deepmind" in msg_lower:
+        web_results = await fetch_live_web_context("Google AI announcements Gemini DeepMind latest news", limit=2)
+        live_snippet = ""
+        if web_results:
+            live_snippet = "\n\n<b>Recent headline in the news:</b>\n" + "\n".join(
+                f"• <a href='{r['url']}'>{html.escape(r['title'])}</a>\n  {html.escape(r.get('snippet', '')[:140])}..."
+                for r in web_results if r.get("title") and r.get("url")
             )
+
         return (
-            "🛡️ <b>Cybersecurity is in a state of rapid transformation.</b>\n\n"
-            "With the rise of AI-assisted exploits and automated vulnerability scanning, defense teams are "
-            "shifting toward zero-trust architectures, automated patching, and memory-safe programming languages (like Rust)."
-            f"{rec_text}\n\n"
-            "<i>Ask me about any specific security CVE, company breach, or use <code>/search &lt;query&gt;</code> to dig deeper!</i>"
+            f"Here is what <b>Google</b> is focusing on right now, {html.escape(user_name)}! 🌐\n\n"
+            "Google and Google DeepMind are pushing aggressively on several major frontiers:\n\n"
+            "1. 🧠 <b>Gemini 2.0 &amp; 2.5 Frontier Models</b>:\n"
+            "Google rolled out Gemini 2.0 (including Flash and Thinking variants), which feature native multimodality, "
+            "low-latency audio/video reasoning, and agentic capabilities for complex multi-step reasoning.\n\n"
+            "2. 🤖 <b>Project Astra &amp; Autonomous Agents</b>:\n"
+            "Building universal AI assistants that can see, hear, and converse in real-time with sub-second latency, "
+            "alongside coding and browser agents (like Project Jarvis) capable of performing tasks on computers.\n\n"
+            "3. ⚡ <b>Custom Silicon (TPU v6 / Trillium)</b>:\n"
+            "Massive deployment of custom AI hardware (Trillium TPUs and TPU v5p) providing unprecedented compute efficiency "
+            "for training foundation models and powering Google Cloud AI workloads.\n\n"
+            "4. 🔬 <b>Quantum Breakthroughs (Willow)</b>:\n"
+            "DeepMind announced the 'Willow' quantum chip, which demonstrated exponential error reduction as more qubits were added—a "
+            "historic milestone toward fault-tolerant quantum computing.\n\n"
+            "5. 🔍 <b>Search &amp; Ecosystem Integration</b>:\n"
+            "Deeply weaving AI Overviews into Google Search, Android 16 on mobile, and Google Workspace (Docs, Gmail, Sheets)."
+            f"{live_snippet}\n\n"
+            "<i>Is there a specific Google project (like Gemini, TPUs, or Android) you'd like to dive deeper into?</i>"
         )
 
-    # 3. Hardware / Semiconductor / Chips
-    if any(k in msg_lower for k in ["chip", "gpu", "nvidia", "hardware", "intel", "amd", "tsmc", "quantum"]):
-        recent_hw = search_recent_db_stories("chip gpu nvidia intel hardware quantum tsmc", limit=3)
-        rec_text = ""
-        if recent_hw:
-            rec_text = "\n\n<b>Recent hardware stories in our digest:</b>\n" + "\n".join(
-                f"• <a href='{s['url']}'>{html.escape(s['title'])}</a> ({s['source']})" for s in recent_hw
+    # 2) OpenAI
+    if "openai" in msg_lower or "chatgpt" in msg_lower or "sam altman" in msg_lower:
+        web_results = await fetch_live_web_context("OpenAI latest announcements o1 o3 models news", limit=2)
+        live_snippet = ""
+        if web_results:
+            live_snippet = "\n\n<b>Latest OpenAI headlines:</b>\n" + "\n".join(
+                f"• <a href='{r['url']}'>{html.escape(r['title'])}</a>\n  {html.escape(r.get('snippet', '')[:140])}..."
+                for r in web_results if r.get("title") and r.get("url")
             )
+
         return (
-            "⚡ <b>Hardware &amp; Silicon Innovation:</b>\n\n"
-            "The race for compute efficiency is fiercer than ever. Between advanced 2nm/3nm packaging, high-bandwidth "
-            "memory (HBM3e/HBM4), and specialized neural processing units, hardware remains the foundation of all modern software scale."
-            f"{rec_text}\n\n"
-            "<i>Type <code>/search &lt;topic&gt;</code> to look up latest hardware benchmarks or company earnings!</i>"
+            f"Here is what <b>OpenAI</b> is up to right now, {html.escape(user_name)}! 🚀\n\n"
+            "OpenAI is leading several groundbreaking initiatives:\n\n"
+            "1. 🧩 <b>Reasoning Models (o1 &amp; o3 series)</b>:\n"
+            "Shifting focus to 'test-time compute'—where the model deliberates and reasons step-by-step before producing "
+            "an answer, dramatically outperforming standard LLMs on complex math, coding, and competitive benchmarks.\n\n"
+            "2. 🖥️ <b>Autonomous 'Operator' Agents</b>:\n"
+            "Developing computer-using agents that can autonomously navigate web browsers, write code, run commands, "
+            "and book flights or complete real-world workflows on your behalf.\n\n"
+            "3. 🎬 <b>Sora &amp; Multimodal Video</b>:\n"
+            "Progressively rolling out Sora for photorealistic generative video with physical world simulation.\n\n"
+            "4. 🏗️ <b>Supercomputing Infrastructure ('Stargate')</b>:\n"
+            "Partnering with SoftBank, Oracle, and Microsoft to build massive next-gen data centers with millions of AI accelerators."
+            f"{live_snippet}\n\n"
+            "<i>Would you like to know more about OpenAI's reasoning models or their agent plans?</i>"
         )
 
-    # 4. Direct questions about recent news or web search
-    if any(msg_lower.startswith(q) for q in ["what is ", "who is ", "how does ", "why did ", "tell me about ", "explain "]):
-        search_topic = re.sub(r"^(what is|who is|how does|why did|tell me about|explain)\s+", "", msg_lower).strip(" ?.")
-        if search_topic:
-            try:
-                raw_search = await web_search(search_topic, limit=3)
-                import json
-                search_data = json.loads(raw_search)
-                results = search_data.get("results", [])
-                if results:
-                    summary_lines = [
-                        f"• <b>{html.escape(r.get('title', ''))}</b>: {html.escape(r.get('snippet', '')[:160])}..."
-                        for r in results if r.get("snippet")
-                    ]
-                    return (
-                        f"🔍 <b>Insights on '{html.escape(search_topic)}':</b>\n\n"
-                        + "\n\n".join(summary_lines)
-                        + "\n\n<i>Use <code>/search &lt;topic&gt;</code> for more results or ask another question!</i>"
-                    )
-            except Exception:
-                pass
+    # 3) Nvidia
+    if "nvidia" in msg_lower or "jensen" in msg_lower or "blackwell" in msg_lower or "geforce" in msg_lower:
+        web_results = await fetch_live_web_context("Nvidia Blackwell GPU AI chips latest news", limit=2)
+        live_snippet = ""
+        if web_results:
+            live_snippet = "\n\n<b>Recent Nvidia news:</b>\n" + "\n".join(
+                f"• <a href='{r['url']}'>{html.escape(r['title'])}</a>"
+                for r in web_results if r.get("title") and r.get("url")
+            )
 
-    # 5. Default friendly conversational response
-    recent_db = search_recent_db_stories(msg_lower, limit=2)
-    extra_context = ""
-    if recent_db:
-        extra_context = "\n\n<b>Related recent stories:</b>\n" + "\n".join(
-            f"• <a href='{s['url']}'>{html.escape(s['title'])}</a>" for s in recent_db
+        return (
+            f"Here is the latest on <b>Nvidia</b>, {html.escape(user_name)}! ⚡\n\n"
+            "Nvidia remains the undisputed compute engine of the AI revolution:\n\n"
+            "1. 🛡️ <b>Blackwell Architecture (B200 &amp; GB200 NVL72)</b>:\n"
+            "The Blackwell generation delivers up to 30x faster real-time LLM inference compared to H100, "
+            "connecting 72 GPUs in a single liquid-cooled rack that acts as one giant GPU.\n\n"
+            "2. 🤖 <b>Physical AI &amp; Robotics (Project GR00T &amp; Cosmos)</b>:\n"
+            "Nvidia is pioneering 'Physical AI'—foundation world models that teach humanoid robots and autonomous vehicles "
+            "how to perceive and interact with the physical world in simulation before real deployment.\n\n"
+            "3. 🌐 <b>Networking Dominance</b>:\n"
+            "Quantum-X800 InfiniBand and Spectrum-X Ethernet switches designed to prevent networking bottlenecks across tens of thousands of GPUs."
+            f"{live_snippet}\n\n"
+            "<i>Ask me about Nvidia's GPU benchmarks or financial performance anytime!</i>"
         )
 
+    # 4) DeepSeek
+    if "deepseek" in msg_lower:
+        web_results = await fetch_live_web_context("DeepSeek R1 AI open source reasoning model news", limit=2)
+        live_snippet = ""
+        if web_results:
+            live_snippet = "\n\n<b>Top DeepSeek headlines:</b>\n" + "\n".join(
+                f"• <a href='{r['url']}'>{html.escape(r['title'])}</a>"
+                for r in web_results if r.get("title") and r.get("url")
+            )
+
+        return (
+            f"Here is the breakdown on <b>DeepSeek</b>, {html.escape(user_name)}! 💡\n\n"
+            "DeepSeek has shaken up the global AI industry with extreme architectural efficiency:\n\n"
+            "1. 🧠 <b>DeepSeek-R1 &amp; Open Weights</b>:\n"
+            "A frontier reasoning model trained with pure reinforcement learning (RL) that rivals proprietary closed models (like OpenAI o1), "
+            "released under an open MIT license with full weights and distillation checkpoints.\n\n"
+            "2. ⚙️ <b>Architectural Innovations</b>:\n"
+            "• <b>Multi-head Latent Attention (MLA)</b>: Drastically compresses KV cache memory overhead.\n"
+            "• <b>DeepSeekMoE</b>: Sparse mixture-of-experts activating only a small fraction of parameters per token.\n\n"
+            "3. 💰 <b>Frugal Training Costs</b>:\n"
+            "Demonstrated that frontier capabilities can be achieved at a fraction of Silicon Valley compute budgets, "
+            "democratizing access for the global open-source community."
+            f"{live_snippet}\n\n"
+            "<i>Would you like to know how DeepSeek compares to Claude or ChatGPT?</i>"
+        )
+
+    # 5) Apple
+    if "apple" in msg_lower or "tim cook" in msg_lower or "iphone" in msg_lower:
+        web_results = await fetch_live_web_context("Apple Intelligence M4 Mac iPhone news", limit=2)
+        live_snippet = ""
+        if web_results:
+            live_snippet = "\n\n<b>Recent Apple stories:</b>\n" + "\n".join(
+                f"• <a href='{r['url']}'>{html.escape(r['title'])}</a>"
+                for r in web_results if r.get("title") and r.get("url")
+            )
+
+        return (
+            f"Here is what <b>Apple</b> is doing right now, {html.escape(user_name)}! 🍏\n\n"
+            "Apple is executing on a privacy-first, on-device AI and silicon strategy:\n\n"
+            "1. 📱 <b>Apple Intelligence Rollout</b>:\n"
+            "Gradually delivering on-device generative tools (Clean Up, writing tools, notification summaries, and a more context-aware Siri) "
+            "across iOS, iPadOS, and macOS.\n\n"
+            "2. 🔒 <b>Private Cloud Compute</b>:\n"
+            "For heavier tasks, Apple routes requests to custom Apple Silicon servers with verifiable privacy guarantees—ensuring user data "
+            "is never logged or accessible even to Apple.\n\n"
+            "3. 💻 <b>M4 Chip Family</b>:\n"
+            "Delivering market-leading single-core CPU speeds and powerful neural engines across the Mac lineup."
+            f"{live_snippet}\n\n"
+            "<i>Are you interested in Apple's hardware roadmap or their AI features?</i>"
+        )
+
+    # D. Topic: AI pace / future / safety (e.g. "ai is getting to far", "is ai taking over")
+    if any(k in msg_lower for k in ["too far", "to far", "getting far", "scary", "taking over", "crazy", "fast", "future of ai", "agi", "dangerous"]):
+        return (
+            f"I hear you, {html.escape(user_name)}! 🤖 <b>AI is genuinely progressing at a breathtaking pace!</b>\n\n"
+            "It can feel overwhelming seeing how fast things are moving. In just the past year, we have gone from simple text prediction "
+            "to models that can deliberate and reason, interact with terminals and browsers, and control physical robotic limbs.\n\n"
+            "<b>The three biggest shifts happening right now:</b>\n"
+            "1. <b>Test-Time Reasoning</b>: Models 'thinking' before answering, catching their own logical flaws.\n"
+            "2. <b>Autonomous Agent Tool Use</b>: Moving from chat boxes to agents that execute code, query APIs, and build software.\n"
+            "3. <b>Physical Embodiment</b>: Neural world models being trained to navigate real factories and homes.\n\n"
+            "The key focus in the developer and research community right now is on safety boundaries, automated verification, and alignment.\n\n"
+            "<i>What specific aspect feels most surprising or concerning to you?</i>"
+        )
+
+    # E. Dynamic Live Search & Knowledge for ANY Other Question!
+    # If the user asks anything (starts with what, how, why, who, is, can, tell me, etc. OR has a question mark)
+    is_question = (
+        "?" in msg_clean
+        or any(msg_lower.startswith(w) for w in ["what", "who", "where", "when", "why", "how", "tell", "explain", "is", "can", "does", "will", "show"])
+        or len(msg_clean.split()) >= 3
+    )
+
+    if is_question:
+        clean_search_query = re.sub(r"[?!.,]", "", msg_clean)
+        web_results = await fetch_live_web_context(clean_search_query, limit=3)
+        db_results = search_recent_db_stories(clean_search_query, limit=2)
+
+        if web_results or db_results:
+            bullet_points = []
+            for r in web_results:
+                title = r.get("title", "").strip()
+                snippet = r.get("snippet", "").strip()
+                url = r.get("url", "")
+                if title and snippet:
+                    bullet_points.append(f"• <a href='{url}'><b>{html.escape(title)}</b></a>:\n  {html.escape(snippet[:160])}...")
+
+            db_lines = []
+            for d in db_results:
+                db_lines.append(f"• <a href='{d['url']}'>{html.escape(d['title'])}</a> (<i>{d['source']}</i>)")
+
+            extra_db = ""
+            if db_lines:
+                extra_db = "\n\n<b>From our recent news digest archive:</b>\n" + "\n".join(db_lines)
+
+            bullets_formatted = "\n\n".join(bullet_points) if bullet_points else "Recent web data indicates continuous active development in this area."
+
+            return (
+                f"Great question, {html.escape(user_name)}! Here is what's happening regarding <b>{html.escape(msg_clean)}</b>: 🔍\n\n"
+                f"{bullets_formatted}"
+                f"{extra_db}\n\n"
+                "<i>Would you like me to dive deeper into any of these details, or search for another topic?</i>"
+            )
+
+    # F. Warm, Engaging Catch-All for Anything Else
     return (
-        f"👋 <b>Thanks for your message, {html.escape(user_name)}!</b>\n\n"
-        f"I'm keeping a constant pulse on breaking tech news, AI research, and cybersecurity developments."
-        f"{extra_context}\n\n"
-        "Here are a few quick things you can do:\n"
-        "• Type <b>/news</b> to get the latest categorized tech digest immediately.\n"
-        "• Type <b>/search &lt;topic&gt;</b> (e.g. <code>/search deepseek</code>) to research any subject.\n"
-        "• Type <b>/status</b> to check pipeline and database stats.\n"
-        "• Or ask me any question about technology and AI!"
+        f"Hey {html.escape(user_name)}! 😊\n\n"
+        f"You mentioned: <i>\"{html.escape(msg_clean)}\"</i>\n\n"
+        "I'm keeping a constant pulse on tech, AI research, cybersecurity, and hardware innovations across 7 major publications.\n\n"
+        "Feel free to ask me:\n"
+        "• What any tech company (Google, OpenAI, Nvidia, Apple, etc.) is building\n"
+        "• How specific technologies work\n"
+        "• <b>/news</b> to get the latest breaking tech digest\n"
+        "• <b>/search &lt;query&gt;</b> to research any topic!\n\n"
+        "What are you curious about?"
     )
 
 
@@ -269,15 +424,14 @@ async def handle_user_command(command: str, args: str, chat_id: int | str, user_
     if cmd in ("/start", "/help"):
         return (
             f"👋 <b>Hello {html.escape(user_name)}! Welcome to TechNews Bot.</b>\n\n"
-            "I am your automated AI-driven tech news and research assistant.\n\n"
-            "<b>Available Commands:</b>\n"
+            "I'm your friendly AI tech companion and research assistant! Here is everything I can do for you:\n\n"
             "📰 <b>/news</b> or <b>/digest</b> — Fetch latest breaking stories and send digest now\n"
-            "🔍 <b>/search &lt;query&gt;</b> — Search breaking tech news &amp; web docs (e.g. <code>/search nvidia</code>)\n"
+            "🔍 <b>/search &lt;query&gt;</b> — Search breaking tech news &amp; web docs (e.g. <code>/search nvidia blackwell</code>)\n"
             "📊 <b>/status</b> — View pipeline status, database stats, and schedule\n"
-            "🏷️ <b>/categories</b> — View our 5 news topic categories\n"
+            "🏷️ <b>/categories</b> — View our 5 tracked news topic categories\n"
             "ℹ️ <b>/help</b> — Show this guide\n\n"
-            "💬 <b>Chat with me:</b>\n"
-            "You can talk to me directly about any technology news, AI advancement, or questions. I'm listening 24/7!"
+            "💬 <b>Chat with me anytime:</b>\n"
+            "Ask me anything! What Google is building, how a neural network works, breaking hacks, or what's new in hardware. I'm always here to chat! 😊"
         )
 
     if cmd in ("/news", "/digest"):
@@ -324,44 +478,55 @@ async def handle_user_command(command: str, args: str, chat_id: int | str, user_
         if not query:
             return "🔍 <i>Please specify what you would like to search for.</i>\n\nExample:\n<code>/search deepseek v3</code>\n<code>/search quantum computing breakthrough</code>"
 
-        import json
-        raw_res = await web_search(query, limit=4)
-        try:
-            data = json.loads(raw_res)
-            results = data.get("results", [])
-            if not results:
-                return f"🔍 No recent news or web results found for '<b>{html.escape(query)}</b>'."
+        results = await fetch_live_web_context(query, limit=4)
+        if not results:
+            return f"🔍 No recent news or web results found for '<b>{html.escape(query)}</b>'."
 
-            formatted = [f"🔍 <b>Search results for '{html.escape(query)}':</b>\n"]
-            for r in results:
-                title = html.escape(r.get("title", "Untitled"))
-                snippet = html.escape(r.get("snippet", ""))
-                url = r.get("url", "")
-                formatted.append(f"• <a href='{url}'><b>{title}</b></a>\n  {snippet}\n")
+        formatted = [f"🔍 <b>Search results for '{html.escape(query)}':</b>\n"]
+        for r in results:
+            title = html.escape(r.get("title", "Untitled"))
+            snippet = html.escape(r.get("snippet", ""))
+            url = r.get("url", "")
+            formatted.append(f"• <a href='{url}'><b>{title}</b></a>\n  {snippet}\n")
 
-            return "\n".join(formatted)
-        except Exception as e:
-            logger.error("Search error: %s", e)
-            return f"❌ An error occurred during search: {html.escape(str(e))}"
+        return "\n".join(formatted)
 
     return ""
 
 
 async def process_telegram_update(update: Dict[str, Any], token: str):
-    """Process an individual update dictionary from Telegram getUpdates."""
+    """Process an individual update dictionary from Telegram getUpdates with strict deduplication."""
+    up_id = update.get("update_id")
+    if up_id is not None:
+        if up_id in PROCESSED_UPDATE_IDS:
+            logger.info("⏩ Skipping already processed update_id %s", up_id)
+            return
+        PROCESSED_UPDATE_IDS.add(up_id)
+        if len(PROCESSED_UPDATE_IDS) > 2000:
+            PROCESSED_UPDATE_IDS.clear()
+
     message = update.get("message")
     if not message:
         return
 
     chat = message.get("chat", {})
     chat_id = chat.get("id")
+    message_id = message.get("message_id")
     if not chat_id:
         return
+
+    # Message deduplication key
+    msg_key = f"{chat_id}:{message_id}"
+    if msg_key in PROCESSED_MESSAGES:
+        logger.info("⏩ Skipping duplicate message %s", msg_key)
+        return
+    PROCESSED_MESSAGES.add(msg_key)
+    if len(PROCESSED_MESSAGES) > 2000:
+        PROCESSED_MESSAGES.clear()
 
     text = message.get("text", "").strip()
     user_info = message.get("from", {})
     user_name = user_info.get("first_name") or user_info.get("username") or "Friend"
-    message_id = message.get("message_id")
 
     if not text:
         return
@@ -371,14 +536,13 @@ async def process_telegram_update(update: Dict[str, Any], token: str):
     # Show typing indicator
     await send_typing_action(token, chat_id)
 
-    # Check for slash commands
     reply_text = ""
+    # Slash commands
     if text.startswith("/"):
         parts = text.split(" ", 1)
         command = parts[0]
         args = parts[1] if len(parts) > 1 else ""
 
-        # Special handler for on-demand news trigger
         if command.lower() in ("/news", "/digest"):
             await reply_telegram_message(
                 token,
@@ -402,7 +566,7 @@ async def process_telegram_update(update: Dict[str, Any], token: str):
         else:
             reply_text = await handle_user_command(command, args, chat_id, user_name)
 
-    # Normal conversational chat
+    # Friendly, accurate conversational answer
     if not reply_text:
         reply_text = await generate_conversational_reply(text, user_name)
 
@@ -443,7 +607,6 @@ async def poll_telegram_updates(stop_event: Optional[asyncio.Event] = None):
                             logger.error("Error processing update %s: %s", up_id, e)
 
                 elif resp.status_code == 409:
-                    # Another instance is polling (e.g. dev reload or second process)
                     logger.warning("Telegram getUpdates 409 Conflict: another instance is polling. Waiting 15s...")
                     await asyncio.sleep(15)
                 else:

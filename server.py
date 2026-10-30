@@ -247,41 +247,60 @@ async def web_search(query: str, limit: int = 5) -> str:
 
     try:
         async with httpx.AsyncClient(timeout=12.0, headers=headers, follow_redirects=True) as client:
-            resp = await client.post(
-                "https://html.duckduckgo.com/html/",
-                data={"q": query},
-            )
-            if resp.status_code != 200:
-                return json.dumps({"error": f"Search engine returned status {resp.status_code}"})
-
             results: List[Dict[str, str]] = []
-            snippets = re.findall(
-                r"<a[^>]+class=[\"']result__snippet[\"'][^>]*>(.*?)</a>",
-                resp.text,
-                re.DOTALL,
-            )
-            titles = re.findall(
-                r"<a[^>]+class=[\"']result__a[\"'][^>]*href=[\"'](.*?)[\"'][^>]*>(.*?)</a>",
-                resp.text,
-                re.DOTALL,
-            )
-
-            for i in range(min(len(titles), clamped_limit)):
-                raw_url, raw_title = titles[i]
-                title = unescape(re.sub(r"<[^>]+>", "", raw_title)).strip()
-                snippet = (
-                    unescape(re.sub(r"<[^>]+>", "", snippets[i])).strip()
-                    if i < len(snippets)
-                    else ""
+            try:
+                resp = await client.post(
+                    "https://html.duckduckgo.com/html/",
+                    data={"q": query},
                 )
-                # Unpack DuckDuckGo redirect url if applicable
-                actual_url = raw_url
-                if "uddg=" in actual_url:
-                    parts = actual_url.split("uddg=")
-                    if len(parts) > 1:
-                        actual_url = unquote(parts[1].split("&")[0])
+                if resp.status_code == 200:
+                    snippets = re.findall(
+                        r"<a[^>]+class=[\"']result__snippet[\"'][^>]*>(.*?)</a>",
+                        resp.text,
+                        re.DOTALL,
+                    )
+                    titles = re.findall(
+                        r"<a[^>]+class=[\"']result__a[\"'][^>]*href=[\"'](.*?)[\"'][^>]*>(.*?)</a>",
+                        resp.text,
+                        re.DOTALL,
+                    )
 
-                results.append({"title": title, "url": actual_url, "snippet": snippet})
+                    for i in range(min(len(titles), clamped_limit)):
+                        raw_url, raw_title = titles[i]
+                        title = unescape(re.sub(r"<[^>]+>", "", raw_title)).strip()
+                        snippet = (
+                            unescape(re.sub(r"<[^>]+>", "", snippets[i])).strip()
+                            if i < len(snippets)
+                            else ""
+                        )
+                        # Unpack DuckDuckGo redirect url if applicable
+                        actual_url = raw_url
+                        if "uddg=" in actual_url:
+                            parts = actual_url.split("uddg=")
+                            if len(parts) > 1:
+                                actual_url = unquote(parts[1].split("&")[0])
+
+                        results.append({"title": title, "url": actual_url, "snippet": snippet})
+            except Exception:
+                pass
+
+            # Fallback to Google News RSS search if DuckDuckGo returned 0 results
+            if not results:
+                encoded_q = httpx.URL("", params={"q": query}).query.decode("utf-8")
+                rss_url = f"https://news.google.com/rss/search?{encoded_q}&hl=en-US&gl=US&ceid=US:en"
+                resp_news = await client.get(rss_url)
+                if resp_news.status_code == 200:
+                    parsed_feed = await asyncio.to_thread(feedparser.parse, resp_news.content)
+                    for entry in parsed_feed.entries[:clamped_limit]:
+                        entry_title = unescape(entry.get("title", "Untitled")).strip()
+                        entry_url = entry.get("link", "")
+                        raw_desc = entry.get("description", "")
+                        clean_desc = unescape(re.sub(r"<[^>]+>", "", raw_desc)).strip()
+                        results.append({
+                            "title": entry_title,
+                            "url": entry_url,
+                            "snippet": clean_desc[:220] if clean_desc else entry_title,
+                        })
 
             return json.dumps(results)
     except Exception as e:
