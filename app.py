@@ -13,9 +13,14 @@ from starlette.applications import Starlette
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from graph import run_agent
-from scheduler import schedule_loop
-from telegram_bot import poll_telegram_updates
+try:
+    from src.agent.graph import run_agent
+    from src.scheduler import schedule_loop
+    from src.bot.telegram_bot import poll_telegram_updates
+except ImportError:
+    from graph import run_agent
+    from scheduler import schedule_loop
+    from telegram_bot import poll_telegram_updates
 
 PORT = int(os.getenv("PORT", "10000"))
 CHECK_INTERVAL_MINUTES = int(os.getenv("CHECK_INTERVAL_MINUTES", "60"))

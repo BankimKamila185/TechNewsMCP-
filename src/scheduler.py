@@ -7,16 +7,30 @@ import argparse
 import asyncio
 import datetime
 import logging
+import os
 import sys
 import time
 
-from graph import run_agent
-from telegram_bot import poll_telegram_updates
+try:
+    from src.agent.graph import run_agent
+    from src.bot.telegram_bot import poll_telegram_updates
+except ImportError:
+    from graph import run_agent
+    from telegram_bot import poll_telegram_updates
+
+_ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+_LOG_DIR = os.path.join(_ROOT_DIR, "logs")
+os.makedirs(_LOG_DIR, exist_ok=True)
+_LOG_FILE = os.path.join(_LOG_DIR, "scheduler.log")
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler(_LOG_FILE, mode="a", encoding="utf-8"),
+    ],
 )
 logger = logging.getLogger("scheduler")
 

@@ -6,29 +6,50 @@ import asyncio
 import json
 import os
 import sqlite3
+import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 
-from server import (
-    MAX_TELEGRAM_CHUNK_SIZE,
-    doc_search,
-    fetch_tech_news,
-    send_telegram_message,
-    send_telegram_photo,
-    split_telegram_message,
-    web_search,
-)
-from state_store import (
-    are_titles_similar,
-    filter_unsent_articles,
-    get_sent_urls,
-    init_db,
-    mark_articles_as_sent,
-    mark_urls_as_sent,
-    normalize_url,
-)
+try:
+    from src.mcp_server.server import (
+        MAX_TELEGRAM_CHUNK_SIZE,
+        doc_search,
+        fetch_tech_news,
+        send_telegram_message,
+        send_telegram_photo,
+        split_telegram_message,
+        web_search,
+    )
+    from src.storage.state_store import (
+        are_titles_similar,
+        filter_unsent_articles,
+        get_sent_urls,
+        init_db,
+        mark_articles_as_sent,
+        mark_urls_as_sent,
+        normalize_url,
+    )
+except ImportError:
+    from server import (
+        MAX_TELEGRAM_CHUNK_SIZE,
+        doc_search,
+        fetch_tech_news,
+        send_telegram_message,
+        send_telegram_photo,
+        split_telegram_message,
+        web_search,
+    )
+    from state_store import (
+        are_titles_similar,
+        filter_unsent_articles,
+        get_sent_urls,
+        init_db,
+        mark_articles_as_sent,
+        mark_urls_as_sent,
+        normalize_url,
+    )
 
 
 # ==============================================================================
@@ -105,7 +126,8 @@ async def test_fetch_tech_news_unknown_source():
 @pytest.mark.asyncio
 async def test_fetch_tech_news_limit_clamping():
     """Limit parameter is clamped to between 1 and 30."""
-    with patch("server._fetch_hackernews_stories", new_callable=AsyncMock) as mock_fetch:
+    server_mod = "src.mcp_server.server" if "src.mcp_server.server" in sys.modules else "server"
+    with patch(f"{server_mod}._fetch_hackernews_stories", new_callable=AsyncMock) as mock_fetch:
         mock_fetch.return_value = [{"title": "Test", "url": "https://example.com", "source": "hackernews"}]
 
         # Test limit < 1 clamps to 1

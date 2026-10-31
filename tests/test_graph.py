@@ -2,15 +2,26 @@
 Unit tests for LangGraph agent routing and helper utilities.
 """
 
-from graph import (
-    AgentState,
-    build_graph,
-    classify_article,
-    extract_mcp_text,
-    route_after_filter,
-    sanitize_telegram_html,
-    summarize,
-)
+try:
+    from src.agent.graph import (
+        AgentState,
+        build_graph,
+        classify_article,
+        extract_mcp_text,
+        route_after_filter,
+        sanitize_telegram_html,
+        summarize,
+    )
+except ImportError:
+    from graph import (
+        AgentState,
+        build_graph,
+        classify_article,
+        extract_mcp_text,
+        route_after_filter,
+        sanitize_telegram_html,
+        summarize,
+    )
 import pytest
 
 

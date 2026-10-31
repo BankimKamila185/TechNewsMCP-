@@ -7,13 +7,18 @@ Provides multi-layer deduplication:
   4. In-batch cross-publication deduplication
 """
 
+import os
 import re
 import sqlite3
 from difflib import SequenceMatcher
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
-DEFAULT_DB_PATH = "sent.db"
+_ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+DEFAULT_DB_PATH = os.path.join(_ROOT_DIR, "data", "sent.db")
+# Fallback to root sent.db if data/sent.db doesn't exist yet but root sent.db exists
+if not os.path.exists(DEFAULT_DB_PATH) and os.path.exists(os.path.join(_ROOT_DIR, "sent.db")):
+    DEFAULT_DB_PATH = os.path.join(_ROOT_DIR, "sent.db")
 
 # Common stopwords to exclude when analyzing title keywords
 STOPWORDS: Set[str] = {
@@ -122,6 +127,7 @@ def are_titles_similar(t1: str, t2: str) -> bool:
 
 def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
     """Initialize the SQLite database schema and migrate columns if needed."""
+    os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
     with sqlite3.connect(db_path) as conn:
         cursor = conn.cursor()
         cursor.execute(

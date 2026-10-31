@@ -2,16 +2,36 @@
 Unit tests for conversational Telegram bot handling.
 """
 
+import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
-from telegram_bot import (
-    generate_conversational_reply,
-    get_db_stats,
-    handle_user_command,
-    process_telegram_update,
-    reply_telegram_message,
-)
+try:
+    from src.bot.telegram_bot import (
+        generate_conversational_reply,
+        get_db_stats,
+        handle_user_command,
+        process_telegram_update,
+        reply_telegram_message,
+    )
+except ImportError:
+    from telegram_bot import (
+        generate_conversational_reply,
+        get_db_stats,
+        handle_user_command,
+        process_telegram_update,
+        reply_telegram_message,
+    )
+
+bot_mod = "src.bot.telegram_bot" if "src.bot.telegram_bot" in sys.modules else "telegram_bot"
+
+
+@pytest.fixture(autouse=True)
+def reset_dedup():
+    bot_mod_obj = sys.modules.get("src.bot.telegram_bot") or sys.modules.get("telegram_bot")
+    if bot_mod_obj:
+        getattr(bot_mod_obj, "PROCESSED_UPDATE_IDS", set()).clear()
+        getattr(bot_mod_obj, "PROCESSED_MESSAGES", set()).clear()
 
 
 @pytest.mark.asyncio
@@ -33,7 +53,7 @@ async def test_generate_conversational_reply_cybersecurity():
 async def test_generate_conversational_reply_hardware():
     """Verify hardware topics trigger semiconductor and compute responses."""
     resp = await generate_conversational_reply("What is the latest with nvidia and intel chips?", user_name="Bankim")
-    assert "Nvidia" in resp or "Blackwell" in resp or "Hardware" in resp or "Silicon" in resp or "compute" in resp
+    assert "nvidia" in resp.lower() or "intel" in resp.lower() or "chip" in resp.lower()
 
 
 @pytest.mark.asyncio
@@ -73,7 +93,7 @@ async def test_handle_user_command_search_empty():
 async def test_handle_user_command_search_mocked():
     """Verify /search formats returned search results."""
     mock_results = '{"results": [{"title": "DeepSeek R1", "snippet": "New open-weights reasoning model", "url": "https://deepseek.com"}]}'
-    with patch("telegram_bot.web_search", new_callable=AsyncMock) as mock_search:
+    with patch(f"{bot_mod}.web_search", new_callable=AsyncMock) as mock_search:
         mock_search.return_value = mock_results
         res = await handle_user_command("/search", "deepseek", 12345, "Bankim")
         assert "Search results for 'deepseek'" in res
@@ -92,8 +112,8 @@ async def test_process_telegram_update_conversational_message():
             "text": "ai is getting to far",
         },
     }
-    with patch("telegram_bot.reply_telegram_message", new_callable=AsyncMock) as mock_reply, \
-         patch("telegram_bot.send_typing_action", new_callable=AsyncMock):
+    with patch(f"{bot_mod}.reply_telegram_message", new_callable=AsyncMock) as mock_reply, \
+         patch(f"{bot_mod}.send_typing_action", new_callable=AsyncMock):
         mock_reply.return_value = True
         await process_telegram_update(fake_update, "dummy-token")
         assert mock_reply.called

@@ -24,14 +24,24 @@ from dotenv import load_dotenv
 
 import sqlite3
 
-from graph import run_agent
-from server import (
-    DEFAULT_USER_AGENT,
-    MAX_TELEGRAM_CHUNK_SIZE,
-    split_telegram_message,
-    web_search,
-)
-from state_store import DEFAULT_DB_PATH, get_sent_records
+try:
+    from src.agent.graph import run_agent
+    from src.mcp_server.server import (
+        DEFAULT_USER_AGENT,
+        MAX_TELEGRAM_CHUNK_SIZE,
+        split_telegram_message,
+        web_search,
+    )
+    from src.storage.state_store import DEFAULT_DB_PATH, get_sent_records
+except ImportError:
+    from graph import run_agent
+    from server import (
+        DEFAULT_USER_AGENT,
+        MAX_TELEGRAM_CHUNK_SIZE,
+        split_telegram_message,
+        web_search,
+    )
+    from state_store import DEFAULT_DB_PATH, get_sent_records
 
 load_dotenv()
 logger = logging.getLogger("telegram_bot")

@@ -15,23 +15,25 @@
 
 1. [Executive Summary & Problem Statement](#-executive-summary--problem-statement)
 2. [End-to-End System Architecture](#-end-to-end-system-architecture)
-3. [Component Deep-Dives](#-component-deep-dives)
-   - [1. FastMCP Server (`server.py`)](#1-fastmcp-server-serverpy)
-   - [2. LangGraph Stateful Workflow (`graph.py`)](#2-langgraph-stateful-workflow-graphpy)
-   - [3. 4-Layer Deduplication Engine (`state_store.py`)](#3-4-layer-deduplication-engine-statestorepy)
+3. [Unified CLI Interface (`main.py`)](#-unified-cli-interface-mainpy)
+4. [Component Deep-Dives](#-component-deep-dives)
+   - [1. FastMCP Server (`src/mcp_server/server.py`)](#1-fastmcp-server-srcmcp_serverserverpy)
+   - [2. LangGraph Stateful Workflow (`src/agent/graph.py`)](#2-langgraph-stateful-workflow-srcagentgraphpy)
+   - [3. 4-Layer Deduplication Engine (`src/storage/state_store.py`)](#3-4-layer-deduplication-engine-srcstoragestate_storepy)
    - [4. Dual-Engine LLM Inference (Groq + Claude)](#4-dual-engine-llm-inference-groq--claude)
-   - [5. 24/7 Interactive Conversational Bot (`telegram_bot.py`)](#5-247-interactive-conversational-bot-telegrambotpy)
-   - [6. Cloud Production Web Server (`app.py` & `render.yaml`)](#6-cloud-production-web-server-apppy--renderyaml)
-4. [The 5 Structured News Domains](#-the-5-structured-news-domains)
-5. [Local Installation & Setup](#-local-installation--setup)
-6. [Cloud Deployment (Render & GitHub Actions)](#-cloud-deployment-render--github-actions)
-7. [Automated Test Suite (39 Pytest Cases)](#-automated-test-suite-39-pytest-cases)
-8. [🎓 Comprehensive Viva & Technical Defense Guide](#-comprehensive-viva--technical-defense-guide)
+   - [5. 24/7 Interactive Conversational Bot (`src/bot/telegram_bot.py`)](#5-247-interactive-conversational-bot-srcbottelegram_botpy)
+   - [6. Continuous Daemon Scheduler (`src/scheduler.py`)](#6-continuous-daemon-scheduler-srcschedulerpy)
+   - [7. Cloud Production Web Server (`app.py` & `render.yaml`)](#7-cloud-production-web-server-apppy--renderyaml)
+5. [The 5 Structured News Domains](#-the-5-structured-news-domains)
+6. [Local Installation & Setup](#-local-installation--setup)
+7. [Cloud Deployment (Render & GitHub Actions)](#-cloud-deployment-render--github-actions)
+8. [Automated Test Suite (39 Pytest Cases)](#-automated-test-suite-39-pytest-cases)
+9. [🎓 Comprehensive Viva & Technical Defense Guide](#-comprehensive-viva--technical-defense-guide)
    - [Core Theoretical Concepts](#core-theoretical-concepts)
    - [Top 20 Viva Questions & Model Answers](#top-20-viva-questions--model-answers)
    - [Algorithmic & Mathematical Foundations](#algorithmic--mathematical-foundations)
    - [System Design & Failure Mode Analysis](#system-design--failure-mode-analysis)
-9. [Project Directory Layout](#-project-directory-layout)
+10. [Project Directory Layout](#-project-directory-layout)
 
 ---
 
@@ -109,9 +111,23 @@ TechNews-MCP is an autonomous agentic system built on modern software architectu
 
 ---
 
+## ⚡ Unified CLI Interface (`main.py`)
+
+The project provides a single, production-grade CLI runner:
+
+```bash
+python main.py run                  # Run LangGraph news digest once
+python main.py schedule --hours 1   # Run continuous hourly scheduler + 24/7 Telegram chat
+python main.py chat                 # Run interactive Telegram conversational bot only
+python main.py connect              # Interactive wizard to link Telegram bot & auto-capture Chat ID
+python main.py server               # Start FastMCP server on stdio
+```
+
+---
+
 ## 🔬 Component Deep-Dives
 
-### 1. FastMCP Server (`server.py`)
+### 1. FastMCP Server (`src/mcp_server/server.py`)
 Built using the official Anthropic **Model Context Protocol (FastMCP)** Python SDK over the standard input/output (`stdio`) transport:
 - **`fetch_tech_news(source: str, limit: int)`**:
   - Aggregates across 7 curated sources: Hacker News, TechCrunch, The Verge, Ars Technica, The Guardian, MIT Technology Review, DeepLearning.AI.
@@ -129,7 +145,7 @@ Built using the official Anthropic **Model Context Protocol (FastMCP)** Python S
 
 ---
 
-### 2. LangGraph Stateful Workflow (`graph.py`)
+### 2. LangGraph Stateful Workflow (`src/agent/graph.py`)
 
 LangGraph structures the multi-stage pipeline as an immutable state transition system:
 
@@ -156,14 +172,14 @@ class AgentState(TypedDict):
 
 #### The 5 Graph Nodes:
 1. **`fetch_news`**: Concurrently triggers MCP client queries across all sources, merges candidate lists, extracts featured thumbnail media, and eliminates in-batch duplicates.
-2. **`filter_new`**: Invokes `filter_unsent_articles()` in `state_store.py`. If 0 new stories remain, conditional edge `route_after_filter` routes execution straight to `END`, saving LLM tokens and avoiding user spam.
+2. **`filter_new`**: Invokes `filter_unsent_articles()` in `src/storage/state_store.py`. If 0 new stories remain, conditional edge `route_after_filter` routes execution straight to `END`, saving LLM tokens and avoiding user spam.
 3. **`research`**: Selects the top 5 candidate stories and issues asynchronous `web_search` and `doc_search` calls to generate context notes.
 4. **`summarize`**: Synthesizes the categorized digest into 5 distinct domains using Groq (`qwen/qwen3.8-27b`) or Claude, strictly enforcing HTML formatting and ampersand escaping (`&amp;`).
-5. **`send`**: Delivers the categorized digest with the featured headline image via Telegram, and commits all successfully delivered story URLs into `sent.db`.
+5. **`send`**: Delivers the categorized digest with the featured headline image via Telegram, and commits all successfully delivered story URLs into `data/sent.db`.
 
 ---
 
-### 3. 4-Layer Deduplication Engine (`state_store.py`)
+### 3. 4-Layer Deduplication Engine (`src/storage/state_store.py`)
 
 Deduplication is one of the most critical engineering components. It operates across 4 distinct layers:
 
@@ -223,7 +239,7 @@ The project features a **multi-provider LLM failover architecture**:
 
 ---
 
-### 5. 24/7 Interactive Conversational Bot (`telegram_bot.py`)
+### 5. 24/7 Interactive Conversational Bot (`src/bot/telegram_bot.py`)
 
 Unlike passive broadcast bots, TechNews-MCP provides a 24/7 bidirectional conversational assistant:
 - **Real-Time Long Polling**: Uses `getUpdates` with a 20-second timeout.
@@ -231,7 +247,7 @@ Unlike passive broadcast bots, TechNews-MCP provides a 24/7 bidirectional conver
   - Implements an in-memory sliding window cache `PROCESSED_UPDATE_IDS` (2,000 IDs) and message key cache `chat_id:message_id`.
   - Gracefully handles **HTTP 409 Conflict** with exponential backoff if another process is briefly detected.
 - **Dynamic Research & Grounding**:
-  - If a user asks *"what google is doing"* or *"what is the latest on deepseek"*, the bot performs live web searches, analyzes recent news archives from `sent.db`, and uses Groq to synthesize a friendly, structured answer with live links.
+  - If a user asks *"what google is doing"* or *"what is the latest on deepseek"*, the bot performs live web searches, analyzes recent news archives from `data/sent.db`, and uses Groq to synthesize a friendly, structured answer with live links.
 - **Interactive Slash Commands**:
   - `/news` or `/digest`: Runs the pipeline on demand and delivers the latest tech digest instantly.
   - `/search <query>`: Live web and documentation research on any topic.
@@ -241,7 +257,15 @@ Unlike passive broadcast bots, TechNews-MCP provides a 24/7 bidirectional conver
 
 ---
 
-### 6. Cloud Production Web Server (`app.py` & `render.yaml`)
+### 6. Continuous Daemon Scheduler (`src/scheduler.py`)
+
+- **Autonomous Infinite Loop**: Periodically triggers the LangGraph state machine every 60 minutes (or user-defined `--interval`/`--hours`).
+- **Concurrent Polling**: Uses `asyncio.gather` to concurrently run the hourly news digest cycle and the interactive Telegram bot polling loop in a single asynchronous process.
+- **Structured Persistent Logging**: Streams formatted status logs to `stdout` and appends detailed diagnostic execution traces to `logs/scheduler.log`.
+
+---
+
+### 7. Cloud Production Web Server (`app.py` & `render.yaml`)
 
 - **Starlette & Uvicorn**: Lightweight asynchronous web server that binds to Render's dynamic `$PORT`.
 - **Async Lifespan Management**:
@@ -316,17 +340,23 @@ If you don't know your `TELEGRAM_CHAT_ID`:
 1. Search for your bot in Telegram and click **START**.
 2. Run the auto-connection script:
 ```bash
-python connect_telegram.py
+python main.py connect
 ```
 *The script automatically reads the incoming `/start` packet, saves your `TELEGRAM_CHAT_ID` to `.env`, and sends a confirmation message!*
 
 ### 4. Run the Application
 ```bash
-# Run continuous background scheduler + 24/7 interactive chat
-python scheduler.py --hours 1
+# 🚀 Recommended: Run continuous hourly scheduler + 24/7 interactive chat
+python main.py schedule --hours 1
 
-# Or run the LangGraph news agent once for testing
-python graph.py
+# Or run the LangGraph news agent once for immediate digest
+python main.py run
+
+# Or run only the 24/7 interactive Telegram conversational bot
+python main.py chat
+
+# Or start the FastMCP server over stdio
+python main.py server
 ```
 
 ---
@@ -524,28 +554,45 @@ def stem_word(w: str) -> str:
 ## 📁 Project Directory Layout
 
 ```
-tech-news-mcp/
-├── app.py                    # Production Starlette/Uvicorn ASGI web server
-├── render.yaml               # Render Cloud Blueprint (Infrastructure as Code)
-├── server.py                 # FastMCP server exposing 4 standardized tools
-├── graph.py                  # LangGraph stateful DAG agent (5 nodes + conditional edge)
-├── scheduler.py              # Background recurring daemon (hourly news cycle + listener)
-├── telegram_bot.py           # 24/7 conversational chatbot (Groq LPU reasoning + live search)
-├── state_store.py            # SQLite 4-layer deduplication & URL canonicalizer
-├── connect_telegram.py       # One-click script to detect Chat ID and link bot
-├── requirements.txt          # Production dependencies
-├── pytest.ini                # Pytest configuration
-├── .env.example              # Sample environment variables template
-├── .gitignore                # Git ignore rules (.env, .venv, *.db, __pycache__)
-├── README.md                 # Complete system documentation & Viva Defense Guide
+technewsmcp/
+├── app.py                      # Starlette/Uvicorn ASGI web server for Render
+├── main.py                     # Unified CLI entrypoint (run, schedule, chat, connect, server)
+├── render.yaml                 # Render Cloud Infrastructure-as-Code Blueprint
+├── requirements.txt            # Production dependencies
+├── pytest.ini                  # Pytest configuration
+├── .env.example                # Sample environment variables template
+├── .gitignore                  # Git ignore rules (.env, .venv, *.db, *.log, __pycache__)
+├── README.md                   # Complete system documentation & Viva Defense Guide
+├── data/
+│   ├── .gitkeep
+│   └── sent.db                 # Persistent SQLite database (4-layer deduplication index)
+├── logs/
+│   ├── .gitkeep
+│   └── scheduler.log           # Runtime traces for background scheduler & Telegram bot
+├── src/
+│   ├── __init__.py
+│   ├── scheduler.py            # Hourly news scheduler & real-time Telegram long-poller
+│   ├── agent/
+│   │   ├── __init__.py
+│   │   └── graph.py            # LangGraph stateful DAG agent (5 nodes + conditional edge)
+│   ├── bot/
+│   │   ├── __init__.py
+│   │   ├── connect_telegram.py # One-click onboarding wizard to detect Chat ID & link bot
+│   │   └── telegram_bot.py     # 24/7 conversational chatbot (Groq LPU reasoning + live search)
+│   ├── mcp_server/
+│   │   ├── __init__.py
+│   │   └── server.py           # FastMCP server exposing 4 standardized tools
+│   └── storage/
+│       ├── __init__.py
+│       └── state_store.py      # SQLite 4-layer deduplication engine & URL canonicalizer
 ├── tests/
-│   ├── test_app.py           # Pytest suite for web endpoints (/health, /trigger)
-│   ├── test_server.py        # Pytest suite for MCP tools, chunking & deduplication
-│   ├── test_graph.py         # Pytest suite for graph routing & HTML sanitization
-│   └── test_telegram_bot.py  # Pytest suite for Telegram chatbot & Groq reasoning
+│   ├── test_app.py             # Pytest suite for web endpoints (/health, /trigger)
+│   ├── test_server.py          # Pytest suite for MCP tools, chunking & deduplication
+│   ├── test_graph.py           # Pytest suite for graph routing & HTML sanitization
+│   └── test_telegram_bot.py    # Pytest suite for Telegram chatbot & Groq reasoning
 └── .github/
     └── workflows/
-        └── daily.yml         # Daily scheduled GitHub Actions workflow (02:30 UTC / 08:00 AM IST)
+        └── daily.yml           # Daily scheduled GitHub Actions workflow (02:30 UTC / 08:00 AM IST)
 ```
 
 ---

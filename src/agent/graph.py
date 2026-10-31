@@ -17,17 +17,28 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langgraph.graph import END, START, StateGraph
 
-from state_store import (
-    are_titles_similar,
-    filter_unsent_articles,
-    mark_articles_as_sent,
-    normalize_url,
-)
+try:
+    from src.storage.state_store import (
+        are_titles_similar,
+        filter_unsent_articles,
+        mark_articles_as_sent,
+        normalize_url,
+    )
+except ImportError:
+    from state_store import (
+        are_titles_similar,
+        filter_unsent_articles,
+        mark_articles_as_sent,
+        normalize_url,
+    )
 
 # Load environment variables
 load_dotenv()
 
-SERVER_SCRIPT_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "server.py"))
+_CURR_DIR = os.path.dirname(__file__)
+SERVER_SCRIPT_PATH = os.path.abspath(os.path.join(_CURR_DIR, "..", "mcp_server", "server.py"))
+if not os.path.exists(SERVER_SCRIPT_PATH):
+    SERVER_SCRIPT_PATH = os.path.abspath(os.path.join(_CURR_DIR, "..", "..", "server.py"))
 
 MCP_CONNECTIONS: Dict[str, Any] = {
     "tech_news_server": {
