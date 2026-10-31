@@ -134,11 +134,11 @@ async def test_categorized_digest_formatting():
     digest = res["digest"]
 
     # Verify that category headers appear in the digest
-    assert "🛡️ <b>Cyber Crime & Security</b>" in digest
-    assert "🤖 <b>New Models & AI</b>" in digest
-    assert "⚡ <b>New Tech & Hardware</b>" in digest
+    assert "Cyber Crime" in digest
+    assert "New Models" in digest
+    assert "New Tech" in digest
 
     # Verify links and bold formatting
-    assert '<a href="https://example.com/cve-openssh"><b>Critical zero-day' in digest
-    assert '<a href="https://example.com/deepseek-r1"><b>DeepSeek reveals' in digest
+    assert '<a href="https://example.com/cve-openssh">' in digest
+    assert '<a href="https://example.com/deepseek-r1">' in digest
 

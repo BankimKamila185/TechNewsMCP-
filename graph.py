@@ -10,6 +10,7 @@ import re
 import sys
 from typing import Any, Dict, List, Optional, TypedDict
 
+import httpx
 from dotenv import load_dotenv
 from langchain_anthropic import ChatAnthropic
 from langchain_core.prompts import ChatPromptTemplate
